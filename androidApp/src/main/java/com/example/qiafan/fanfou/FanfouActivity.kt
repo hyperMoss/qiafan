@@ -16,15 +16,22 @@ import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
+import android.text.SpannableString
+import android.text.Spanned
+import android.text.TextPaint
 import android.util.Log
 import android.text.Editable
 import android.text.InputFilter
 import android.text.InputType
 import android.text.TextUtils
 import android.text.TextWatcher
+import android.text.method.LinkMovementMethod
+import android.text.style.ClickableSpan
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.inputmethod.EditorInfo
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -72,6 +79,7 @@ class FanfouActivity : AppCompatActivity() {
     private var homeItems: List<FanfouStatus> = emptyList()
     private var homeNextId: String? = null
     private var homeScrollY = 0
+    private var lastFollowTabTapAt = 0L
     private var busy = false
     private var showingTabs = false
     private var exploreSection = "热门话题"
@@ -92,6 +100,8 @@ class FanfouActivity : AppCompatActivity() {
     private var loadingHost: FrameLayout? = null
     private var loadingOverlay: View? = null
     private val repostInFlight = mutableSetOf<String>()
+    private val replyInFlight = mutableSetOf<String>()
+    private val deleteInFlight = mutableSetOf<String>()
     private val followRequestInFlight = mutableSetOf<String>()
 
     companion object {
@@ -198,6 +208,8 @@ class FanfouActivity : AppCompatActivity() {
         favoriteState.clear()
         favoriteInFlight.clear()
         repostInFlight.clear()
+        replyInFlight.clear()
+        deleteInFlight.clear()
         followRequestInFlight.clear()
         chatPeer = null
         chatLog = null
@@ -438,7 +450,24 @@ class FanfouActivity : AppCompatActivity() {
                     gravity = Gravity.CENTER
                     contentDescription = name + if (selected) "，当前页面" else ""
                     isFocusable = true
-                    setOnClickListener { if (!selected) showTab(name) else currentScroll?.smoothScrollTo(0, 0) }
+                    setOnClickListener {
+                        if (!selected) {
+                            showTab(name)
+                        } else if (name == "关注" && activeTab == "关注") {
+                            val now = SystemClock.uptimeMillis()
+                            val doubleTap = lastFollowTabTapAt > 0 &&
+                                now - lastFollowTabTapAt <= ViewConfiguration.getDoubleTapTimeout()
+                            lastFollowTabTapAt = now
+                            if (doubleTap) {
+                                lastFollowTabTapAt = 0L
+                                loadStatuses(true)
+                            } else {
+                                currentScroll?.smoothScrollTo(0, 0)
+                            }
+                        } else {
+                            currentScroll?.smoothScrollTo(0, 0)
+                        }
+                    }
                 }
                 val symbol = when (name) { "关注" -> "home"; "通知" -> "bell"; else -> "trend" }
                 val icon = SymbolIcon(symbol, if (selected) ink else muted)
@@ -682,8 +711,8 @@ class FanfouActivity : AppCompatActivity() {
                 }
             }).into(photo)
         }
-        card.setOnLongClickListener { showStatusActions(status); true }
         if (!detail) {
+            card.setOnLongClickListener { showStatusActions(status); true }
             card.addView(divider().apply { top(14) })
             return card
         }
@@ -708,6 +737,7 @@ class FanfouActivity : AppCompatActivity() {
 
     private fun showStatusActions(status: FanfouStatus) {
         val names = mutableListOf("查看详情", if (favoriteState[status.id] == true) "取消收藏" else "收藏", "一键快转", "写评论")
+        if (ownsStatus(status)) names += "删除这条动态"
         if (status.photo != null || status.originalPhoto != null) names += "查看原图"
         if (status.originalPhoto != null) names += "保存原图"
         names += "复制正文"
@@ -717,6 +747,7 @@ class FanfouActivity : AppCompatActivity() {
                 "写评论" -> openStatus(status)
                 "收藏", "取消收藏" -> toggleFavorite(status, null)
                 "一键快转" -> repost(status, null)
+                "删除这条动态" -> confirmDeleteStatus(status)
                 "查看原图" -> showPhoto(status)
                 "保存原图" -> saveOriginal(status)
                 "复制正文" -> {
@@ -726,6 +757,52 @@ class FanfouActivity : AppCompatActivity() {
                 }
             }
         }.show()
+    }
+
+    /** 删除入口只对当前账号发布的列表动态开放，服务端仍是最终权限判定方。 */
+    private fun ownsStatus(status: FanfouStatus): Boolean =
+        currentUser?.id?.takeIf { it.isNotBlank() } == status.user.id
+
+    private fun confirmDeleteStatus(status: FanfouStatus) {
+        if (!ownsStatus(status)) {
+            toast("只能删除自己发布的动态")
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("删除动态")
+            .setMessage("删除后无法恢复，确定删除这条动态吗？")
+            .setNegativeButton("取消", null)
+            .setPositiveButton("删除") { _, _ -> deleteStatus(status) }
+            .show()
+    }
+
+    private fun deleteStatus(status: FanfouStatus) {
+        if (!ownsStatus(status)) {
+            toast("只能删除自己发布的动态")
+            return
+        }
+        if (!deleteInFlight.add(status.id)) return
+        val turn = generation
+        showFloatingLoading("正在删除动态…")
+        runIo(
+            { api.deleteStatus(status.id) },
+            {
+                deleteInFlight.remove(status.id)
+                if (turn != generation) return@runIo
+                items.removeAll { it.id == status.id }
+                homeItems = homeItems.filterNot { it.id == status.id }
+                replyList = replyList.filterNot { it.id == status.id }
+                if (statusLoader != null) renderStatuses(nextId != null)
+                hideFloatingLoading()
+                toast("已删除动态")
+            },
+            { error ->
+                deleteInFlight.remove(status.id)
+                if (turn != generation) return@runIo
+                hideFloatingLoading()
+                toast("删除失败：" + safeMessage(error))
+            }
+        )
     }
 
     private fun showPhoto(status: FanfouStatus) {
@@ -826,10 +903,7 @@ class FanfouActivity : AppCompatActivity() {
         )
     }
 
-    /**
-     * 动态详情页。饭否没有开放评论列表接口，所以这里只提供「写评论」——
- * 走文档声明的 `in_reply_to_status_id`；列表区域显示明确的未开放状态，不用假数据填充。
- */
+    /** 详情页的正文和评论上下文。评论写入 `in_reply_to_*`，读取走上下文接口过滤。 */
     private data class DetailPayload(
         val status: FanfouStatus,
         val replies: Result<List<FanfouStatus>>
@@ -881,7 +955,7 @@ class FanfouActivity : AppCompatActivity() {
     private fun renderStatusDetail(status: FanfouStatus) {
         body.removeAllViews()
         body.addView(statusCard(status, detail = true))
-        body.addView(replyHint(status))
+        replyHint(status)?.let { body.addView(it) }
         val head = row().apply {
             gravity = Gravity.BOTTOM
             setPadding(dp(18), dp(22), dp(18), dp(10))
@@ -899,7 +973,7 @@ class FanfouActivity : AppCompatActivity() {
             "ok" -> if (replyList.isEmpty()) {
                 body.addView(emptyState("还没有评论", "回复会显示在这里。"))
             } else {
-                replyList.forEach { body.addView(commentRow(it)) }
+                replyList.forEach { body.addView(commentRow(it, status)) }
             }
             "failed" -> body.addView(
                 emptyState("评论加载失败", replyError.ifBlank { "请稍后重试" })
@@ -908,16 +982,25 @@ class FanfouActivity : AppCompatActivity() {
         }
     }
 
-    /** 一条回复。内容是服务端原文，@提及已在正文里，这里只补上头像与时间。 */
-    private fun commentRow(comment: FanfouStatus): View = box().apply {
+    /** 一条回复，连同本详情页已加载的完整原动态一起展示。 */
+    private fun commentRow(comment: FanfouStatus, original: FanfouStatus): View = box().apply {
         setPadding(dp(18), dp(14), dp(18), dp(14))
         setBackgroundColor(Color.WHITE)
-        val line = row().apply { gravity = Gravity.CENTER_VERTICAL }
+        val line = row().apply { gravity = Gravity.TOP }
         addView(line)
-        line.addView(avatarFrame(comment.user, 36), LinearLayout.LayoutParams(dp(36), dp(36)))
+        line.addView(avatarFrame(comment.user, 36).apply {
+            isClickable = true
+            contentDescription = "打开${comment.user.name.ifBlank { comment.user.id }}的主页"
+            setOnClickListener { openUser(comment.user) }
+        }, LinearLayout.LayoutParams(dp(36), dp(36)))
         val text = box().apply { setPadding(dp(12), 0, 0, 0) }
         line.addView(text, LinearLayout.LayoutParams(0, -2, 1f))
-        val names = row().apply { gravity = Gravity.CENTER_VERTICAL }
+        val names = row().apply {
+            gravity = Gravity.CENTER_VERTICAL
+            isClickable = true
+            contentDescription = "打开${comment.user.name.ifBlank { comment.user.id }}的主页"
+            setOnClickListener { openUser(comment.user) }
+        }
         text.addView(names)
         val who = comment.user.name.ifBlank { comment.user.id }
         val mine = currentUser?.id?.isNotBlank() == true && comment.user.id == currentUser?.id
@@ -928,16 +1011,136 @@ class FanfouActivity : AppCompatActivity() {
         names.addView(label(relativeTime(comment.createdAt), 11, muted).apply {
             typeface = Typeface.MONOSPACE
         })
-        text.addView(label(comment.text.ifBlank { "（无文字）" }, 14, ink).apply {
+        val contextUsers = listOf(comment.user, original.user)
+        text.addView(mentionLabel(
+            comment.text.ifBlank { "（无文字）" },
+            14,
+            ink,
+            knownUsers = contextUsers
+        ).apply {
             top(5)
             setLineSpacing(dp(3).toFloat(), 1f)
+        })
+        comment.photo?.let {
+            text.addView(inlinePhoto(comment, 150), LinearLayout.LayoutParams(-1, dp(150)).apply {
+                topMargin = dp(10)
+            })
+        }
+        text.addView(originalStatusCard(original, contextUsers), LinearLayout.LayoutParams(-1, -2).apply {
+            topMargin = dp(10)
         })
         addView(divider())
     }
 
+    /** 评论下方的原动态保留作者、时间、完整正文和图片；卡片空白处可进入动态详情。 */
+    private fun originalStatusCard(
+        original: FanfouStatus,
+        contextUsers: List<FanfouUser>
+    ): View = box().apply {
+        setPadding(dp(12), dp(10), dp(12), dp(12))
+        background = rounded(subtle, 8)
+        isClickable = original.id.isNotBlank()
+        isFocusable = original.id.isNotBlank()
+        contentDescription = "查看被回复的原动态"
+        if (original.id.isNotBlank()) setOnClickListener { openStatusById(original.id) }
+
+        val title = row().apply { gravity = Gravity.CENTER_VERTICAL }
+        title.addView(label("原动态", 11, muted, true), LinearLayout.LayoutParams(0, -2, 1f))
+        title.addView(label("查看详情 ›", 11, accent))
+        addView(title)
+
+        val author = row().apply {
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(9), 0, 0)
+            isClickable = true
+            contentDescription = "打开${original.user.name.ifBlank { original.user.id }}的主页"
+            setOnClickListener { openUser(original.user) }
+        }
+        author.addView(avatarFrame(original.user, 30), LinearLayout.LayoutParams(dp(30), dp(30)))
+        val identity = box().apply { setPadding(dp(8), 0, 0, 0) }
+        identity.addView(label(original.user.name.ifBlank { original.user.id }, 13, ink, true))
+        identity.addView(mentionLabel(
+            "@${original.user.id}",
+            11,
+            muted,
+            knownUsers = contextUsers
+        ).apply {
+            typeface = Typeface.MONOSPACE
+            top(1)
+        })
+        author.addView(identity, LinearLayout.LayoutParams(0, -2, 1f))
+        author.addView(label(relativeTime(original.createdAt), 10, muted).apply {
+            typeface = Typeface.MONOSPACE
+        })
+        addView(author)
+
+        addView(mentionLabel(
+            original.text.ifBlank { "（无文字）" },
+            13,
+            ink,
+            knownUsers = contextUsers
+        ).apply {
+            top(9)
+            setLineSpacing(dp(2).toFloat(), 1f)
+        })
+        original.photo?.let {
+            addView(inlinePhoto(original, 190), LinearLayout.LayoutParams(-1, dp(190)).apply {
+                topMargin = dp(10)
+            })
+        }
+    }
+
+    /** 评论和嵌套原动态共用的单图预览；FIT_CENTER 保证图片内容不被裁切。 */
+    private fun inlinePhoto(status: FanfouStatus, heightDp: Int): View = FrameLayout(this).apply {
+        background = rounded(Color.WHITE, 8)
+        clipToOutline = true
+        isClickable = true
+        contentDescription = "${status.user.name.ifBlank { status.user.id }}发布的图片，点开查看原图"
+        setOnClickListener { showPhoto(status) }
+        val image = ImageView(this@FanfouActivity).apply {
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            background = rounded(Color.WHITE, 8)
+        }
+        addView(image, FrameLayout.LayoutParams(-1, dp(heightDp)))
+        Glide.with(this@FanfouActivity).load(status.photo).into(image)
+    }
+
+    /** 把饭否正文里的 @用户名 变成可点击的主页入口；显示名也可映射到已加载用户。 */
+    private fun mentionLabel(
+        text: String,
+        size: Int,
+        color: Int,
+        bold: Boolean = false,
+        knownUsers: List<FanfouUser> = emptyList()
+    ): TextView = label(text, size, color, bold).apply {
+        val richText = SpannableString(text)
+        val mentions = Regex("@([\\p{L}\\p{N}_~-]+)").findAll(text).toList()
+        mentions.forEach { match ->
+            val userId = match.groupValues[1]
+            richText.setSpan(object : ClickableSpan() {
+                override fun onClick(widget: View) {
+                    val known = (knownUsers + listOfNotNull(currentUser)).firstOrNull {
+                        it.id.equals(userId, ignoreCase = true) || it.name == userId
+                    }
+                    openUser(known ?: FanfouUser(userId, userId, "", false))
+                }
+
+                override fun updateDrawState(drawState: TextPaint) {
+                    drawState.color = accent
+                    drawState.isUnderlineText = false
+                }
+            }, match.range.first, match.range.last + 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
+        this.text = richText
+        if (mentions.isNotEmpty()) {
+            movementMethod = LinkMovementMethod.getInstance()
+            highlightColor = Color.TRANSPARENT
+        }
+    }
+
     /** 这条动态本身是回复时，标出它在回谁，避免脱离上下文。 */
-    private fun replyHint(status: FanfouStatus): View {
-        val target = status.replyToStatusId.takeIf { it.isNotBlank() } ?: return View(this)
+    private fun replyHint(status: FanfouStatus): View? {
+        val target = status.replyToStatusId.takeIf { it.isNotBlank() } ?: return null
         val who = status.replyToScreenName.ifBlank {
             status.replyToUserId.ifBlank { "上一条动态" }
         }
@@ -992,15 +1195,16 @@ class FanfouActivity : AppCompatActivity() {
         addView(bar)
         // 服务端要求正文自带 `@对方id `，这段前缀由客户端补，长度要占掉输入额度。
         val reserved = api.replyPrefixLength(target)
+        val maxBodyLength = (140 - reserved).coerceAtLeast(0)
         val input = EditText(this@FanfouActivity).apply {
-            hint = if (reserved > 0) "回复 @$prefixName…" else "写条评论…"
+            hint = if (maxBodyLength > 0) "回复 @$prefixName…" else "无法回复这条动态"
             textSize = 15f
             setTextColor(ink)
             setHintTextColor(muted)
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or
                 InputType.TYPE_TEXT_FLAG_MULTI_LINE
             imeOptions = EditorInfo.IME_ACTION_SEND
-            filters = arrayOf(InputFilter.LengthFilter((140 - reserved).coerceAtLeast(1)))
+            filters = arrayOf(InputFilter.LengthFilter(maxBodyLength))
             minLines = 1
             maxLines = 4
             setPadding(dp(14), dp(12), dp(14), dp(12))
@@ -1024,15 +1228,19 @@ class FanfouActivity : AppCompatActivity() {
         }
         addView(counter)
 
+        var submitting = false
+
         fun refresh() {
             val length = input.text.toString().trim().length
-            val ready = length > 0
+            val ready = length > 0 && maxBodyLength > 0 && !submitting
             send.isEnabled = ready
             send.isClickable = ready
             send.background = rounded(if (ready) accent else subtle, 22)
             sendIcon.tint(if (ready) Color.WHITE else muted)
-            val left = 140 - reserved - length
-            counter.text = if (reserved > 0) {
+            val left = maxBodyLength - length
+            counter.text = if (maxBodyLength == 0) {
+                "无法回复：原作者标识过长"
+            } else if (reserved > 0) {
                 "回复 @$prefixName · 还可输入 $left 字"
             } else {
                 "还可输入 $left 字"
@@ -1041,10 +1249,18 @@ class FanfouActivity : AppCompatActivity() {
 
         fun submit() {
             val text = input.text.toString().trim()
-            if (text.isBlank()) return
+            if (text.isBlank() || maxBodyLength == 0 || submitting) return
+            submitting = true
+            input.isEnabled = false
             input.text.clear()
             refresh()
-            sendReply(target, text)
+            sendReply(target, text) {
+                submitting = false
+                input.isEnabled = true
+                input.setText(text)
+                input.setSelection(input.text.length)
+                refresh()
+            }
         }
 
         input.addTextChangedListener(object : TextWatcher {
@@ -1062,12 +1278,14 @@ class FanfouActivity : AppCompatActivity() {
         refresh()
     }
 
-    private fun sendReply(target: FanfouStatus, text: String) {
+    private fun sendReply(target: FanfouStatus, text: String, onFailure: (() -> Unit)? = null) {
+        if (!replyInFlight.add(target.id)) return
         val turn = generation
         showFloatingLoading("正在发送评论…")
         runIo(
             { api.reply(text, target) },
             { fresh ->
+                replyInFlight.remove(target.id)
                 if (turn != generation) return@runIo
                 hideFloatingLoading()
                 toast("评论已发出")
@@ -1082,9 +1300,11 @@ class FanfouActivity : AppCompatActivity() {
                 refreshUnreadCounts()
             },
             { error ->
+                replyInFlight.remove(target.id)
                 if (turn != generation) return@runIo
                 hideFloatingLoading()
-                // 失败不自动重发，也不丢原文：把原文交回给用户决定要不要再试。
+                onFailure?.invoke()
+                // 失败不自动重发；编辑框会恢复原文，弹窗提供显式重试。
                 showReplyFailure(target, text, safeMessage(error))
             }
         )

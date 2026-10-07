@@ -232,6 +232,12 @@ internal class FanfouApi(private val credentials: () -> FanfouCredentials) {
         )))
     }
 
+    /** 删除当前授权账号自己发送的消息。服务端权限是最终判定依据。 */
+    fun deleteStatus(id: String) {
+        require(id.isNotBlank()) { "缺少要删除的消息 ID" }
+        apiPost("/statuses/destroy.json", mapOf("id" to id))
+    }
+
     fun publish(text: String): FanfouStatus {
         require(text.isNotBlank() && text.length <= 140) { "动态正文须为 1 到 140 字" }
         return statusFrom(JSONObject(apiPost("/statuses/update.json", mapOf("status" to text))))
@@ -248,17 +254,19 @@ internal class FanfouApi(private val credentials: () -> FanfouCredentials) {
     fun reply(text: String, target: FanfouStatus): FanfouStatus {
         require(text.isNotBlank()) { "回复内容不能为空" }
         require(target.id.isNotBlank()) { "缺少被回复的动态 ID" }
-        val prefix = target.user.id.takeIf { it.isNotBlank() }?.let { "@$it " } ?: ""
-        val room = (140 - prefix.length).coerceAtLeast(1)
+        require(target.user.id.isNotBlank()) { "缺少被回复用户 ID" }
+        val prefix = "@${target.user.id} "
+        val room = 140 - prefix.length
+        require(room > 0) { "被回复用户 ID 过长" }
         val body = text.take(room)
         val params = linkedMapOf("status" to prefix + body, "in_reply_to_status_id" to target.id)
-        target.user.id.takeIf { it.isNotBlank() }?.let { params["in_reply_to_user_id"] = it }
+        params["in_reply_to_user_id"] = target.user.id
         return statusFrom(JSONObject(apiPost("/statuses/update.json", params)))
     }
 
     /** 写评论时会被自动加上的 `@对方id ` 前缀长度，界面用它算剩余字数。 */
     fun replyPrefixLength(target: FanfouStatus): Int =
-        target.user.id.takeIf { it.isNotBlank() }?.let { "@$it ".length } ?: 0
+        target.user.id.takeIf { it.isNotBlank() }?.let { "@$it ".length } ?: 140
 
     /**
      * 读评论的现实做法：官方没有 comments 端点，只能用 `context_timeline` 取这条动态的
