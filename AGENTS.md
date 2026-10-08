@@ -39,7 +39,7 @@
 | 热门 | `GET /trends/list` 返回话题及查询词；再用搜索接口取得对应微博。 |
 | 收藏与快转 | `POST /favorites/create/:id`、`POST /favorites/destroy/:id`；`POST /statuses/update` 的 `repost_status_id` 用于转发，`status` 文本仍按文档限制处理。 |
 | 删除动态 | `POST /statuses/destroy`，表单参数为 `id`；客户端仅对当前账号的动态展示入口，服务端权限是最终判定。 |
-| 评论（写） | `POST /statuses/update` 的 `in_reply_to_status_id` 与 `in_reply_to_user_id` 用于回复一条动态。**正文必须自带 `@对方id ` 前缀**，否则服务端不建立回复关系、返回的 `in_reply_to_*` 为空。前缀与 `repost_status_id` 同理，计入 140 字上限。 |
+| 评论（写） | `POST /statuses/update` 的 `in_reply_to_status_id` 与 `in_reply_to_user_id` 使用真实动态和用户 ID。按用户要求，正文带 `@对方昵称 ` 前缀（缺少昵称时使用账号 ID），前缀计入 140 字上限。此前账号 ID 前缀有联调依据；昵称前缀的线上回复关系须重新验收，检查返回的 `in_reply_to_*`。 |
 | 评论（读） | 无 comments 端点。替代方案：`GET /statuses/context_timeline?id=` 取上下文后按 `in_reply_to_status_id == 目标id` 过滤。只能拿到可见范围内（好友与未设隐私用户）的回复，过滤不到就是没有，不补齐。 |
 | 原图 | 微博对象 `photo.largeurl` 是文档描述的原图地址；`GET /photos/user_timeline` 可用于指定用户图片浏览。不要凭空假定一条微博支持多图字段。 |
 | 用户收藏与公开流 | `GET /favorites/:id` 查询指定用户收藏；`GET /statuses/public_timeline` 用于“随便看看”。以服务端隐私权限为准。 |

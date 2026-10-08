@@ -119,6 +119,18 @@ jobs:
           else
             gh release create "$RELEASE_TAG" release-assets/* --verify-tag --title "恰饭 $RELEASE_TAG" --generate-notes
           fi
+          gh release view "$RELEASE_TAG" --json assets > "$RUNNER_TEMP/release-assets.json"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          assets = json.loads((Path(os.environ['RUNNER_TEMP']) / 'release-assets.json').read_text())['assets']
+          expected = {f"qiafan-{os.environ['RELEASE_TAG']}.apk", f"qiafan-{os.environ['RELEASE_TAG']}.apk.sha256"}
+          uploaded = {asset['name'] for asset in assets if asset['size'] > 0}
+          assert expected <= uploaded, 'Release Assets 缺少 APK 或校验文件'
+          for asset in assets:
+              if asset['name'] in expected:
+                  print(asset['url'])
+          PY
 
       - name: Remove runner signing material
         if: always()

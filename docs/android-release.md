@@ -17,6 +17,8 @@
 
 正式签名须长期使用同一份证书，否则已安装的正式版无法覆盖升级。将 keystore 和密码另行安全备份；`signing/`、`*.jks`、`*.keystore` 已被 Git 忽略。工作流缺少任何签名 Secret 会停止，避免发布无法安装的未签名 APK。GitHub 自带的 `GITHUB_TOKEN` 用于上传 Release，不需要另存个人访问令牌。
 
+2026-10-08 按用户授权创建正式证书，并配置到 `hyperMoss/qiafan`。本机证书为 `signing/qiafan-release.jks`，密码及 alias 保存在 `signing/credentials.json`。安全备份整个 `signing/` 目录；这两个文件均不提交到 Git。
+
 也可用 GitHub CLI 配置，先执行 `gh auth login`，然后运行以下命令。替换 keystore 路径；密码及 alias 使用 CLI 的交互输入，不要把密码写进命令行：
 
 ```sh

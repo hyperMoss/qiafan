@@ -224,8 +224,12 @@ internal class FanfouApi(private val credentials: () -> FanfouCredentials) {
         return statusFrom(JSONObject(apiPost(path + encode(id) + ".json", emptyMap())))
     }
 
-    fun repost(status: FanfouStatus): FanfouStatus {
-        val text = ("转发 @" + status.user.id).take(140)
+    fun repostText(status: FanfouStatus): String =
+        "转@${status.user.name.ifBlank { status.user.id }} ${status.text}"
+
+    fun repost(status: FanfouStatus, text: String = repostText(status)): FanfouStatus {
+        require(status.id.isNotBlank()) { "缺少被转发的动态 ID" }
+        require(text.isNotBlank() && text.length <= 140) { "转发正文须为 1 到 140 字，请编辑后发送" }
         return statusFrom(JSONObject(apiPost(
             "/statuses/update.json",
             mapOf("status" to text, "repost_status_id" to status.id)
@@ -247,26 +251,28 @@ internal class FanfouApi(private val credentials: () -> FanfouCredentials) {
      * 回复一条动态。走文档声明的 `in_reply_to_status_id` / `in_reply_to_user_id`，
      * 与普通发布同属 `POST /statuses/update`。
      *
-     * 关键：正文必须自带 `@对方id` 前缀，否则服务端不会建立回复关系、返回的
-     * `in_reply_to_*` 也会是空。这与本文件里 `repost()` 拼 `转发 @id` 是同一个道理。
+     * 正文使用 `@对方昵称 ` 前缀，回复关系参数仍传用户 ID 和动态 ID。
+     * 转发则在正文中拼 `转@昵称 原文` 并使用转发参数。
      * 前缀计入 140 字上限，所以正文按剩余额度截断。
      */
     fun reply(text: String, target: FanfouStatus): FanfouStatus {
         require(text.isNotBlank()) { "回复内容不能为空" }
         require(target.id.isNotBlank()) { "缺少被回复的动态 ID" }
         require(target.user.id.isNotBlank()) { "缺少被回复用户 ID" }
-        val prefix = "@${target.user.id} "
+        val prefix = "@${replyName(target)} "
         val room = 140 - prefix.length
-        require(room > 0) { "被回复用户 ID 过长" }
+        require(room > 0) { "被回复用户昵称过长" }
         val body = text.take(room)
         val params = linkedMapOf("status" to prefix + body, "in_reply_to_status_id" to target.id)
         params["in_reply_to_user_id"] = target.user.id
         return statusFrom(JSONObject(apiPost("/statuses/update.json", params)))
     }
 
-    /** 写评论时会被自动加上的 `@对方id ` 前缀长度，界面用它算剩余字数。 */
+    fun replyName(target: FanfouStatus): String = target.user.name.ifBlank { target.user.id }
+
+    /** 写评论时会被自动加上的 `@对方昵称 ` 前缀长度，界面用它算剩余字数。 */
     fun replyPrefixLength(target: FanfouStatus): Int =
-        target.user.id.takeIf { it.isNotBlank() }?.let { "@$it ".length } ?: 140
+        replyName(target).takeIf { it.isNotBlank() }?.let { "@$it ".length } ?: 140
 
     /**
      * 读评论的现实做法：官方没有 comments 端点，只能用 `context_timeline` 取这条动态的
