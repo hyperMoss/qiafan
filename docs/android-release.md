@@ -60,4 +60,5 @@ REQUIRE_RELEASE_SIGNING=true ./gradlew :androidApp:assembleRelease
 ## 验证记录
 
 - 2026-10-08：两个工作流通过 actionlint；本机临时测试证书下 `assembleRelease` 成功，apksigner 验签通过，并确认正式包名 `com.example.qiafan`、标签覆盖版本 `1.0.1` 和 versionCode `1000001`。测试证书已删除，不用于正式发布。
-- 正式签名 Secrets、GitHub Actions 云端构建及首次 Release 发布仍须实际执行后确认；本地通过不代表云端已验收。
+- 2026-10-08：正式证书及四个签名 Secrets 已配置；本机正式签名构建和验签通过。[Android CI](https://github.com/hyperMoss/qiafan/actions/runs/37793359730) 的 Debug 与 Release 构建通过；[Android Release](https://github.com/hyperMoss/qiafan/actions/runs/37794322295) 正式签名构建、包信息校验及 Assets 上传全部通过。
+- [v1.0.1 Release](https://github.com/hyperMoss/qiafan/releases/tag/v1.0.1) 的 Assets 包含 `qiafan-v1.0.1.apk`（3,380,054 字节）和 `.apk.sha256`。下载后的 APK 验签通过，证书与本机正式证书一致；包名 `com.example.qiafan`、版本 `1.0.1`、versionCode `1000001`，未开启 Debug。SHA-256 与附件一致：`e7673630460bed9d8e705e57dbdb550f80337cf903c45818f9ef8c4372ceb1e5`。本次验证发布产物，不替代真实饭否功能及设备触控验收。

@@ -6,6 +6,8 @@
 
 推送 `v1.0.1` 这样的版本标签后，GitHub Actions 自动构建正式签名 APK 并上传到对应 Release，同时提供 SHA-256 校验文件。版本、签名 Secrets 和发布步骤见 [Android 自动发布说明](docs/android-release.md)。正式签名配置完成前，工作流会停止发布。
 
+2026-10-08 已完成正式签名配置和云端发布：[v1.0.1 的 Assets](https://github.com/hyperMoss/qiafan/releases/tag/v1.0.1) 提供 APK 与校验文件。已下载验证 SHA-256、正式签名证书、包名和版本；云端 Debug/Release 编译均通过。
+
 ## 本机构建与运行
 
 需要 JDK 17、Android SDK、可用的 Gradle 仓库，以及已连接并授权调试的 Android 设备。项目使用 Gradle 8.8、Android Gradle Plugin 8.5.2。一条命令完成 Debug 编译和安装：
