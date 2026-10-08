@@ -42,3 +42,8 @@ Kotlin-js-store
 /.workbuddy
 /.kotlin
 open-design-diagnostics-*
+
+# Android 正式签名材料只在本机或 GitHub Actions Secrets 中保存
+/signing/
+*.jks
+*.keystore

@@ -1,0 +1,131 @@
+name: Android Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '已有版本标签，例如 v1.0.1'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - name: Validate release tag
+        shell: bash
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
+            echo '版本标签必须为 vmajor.minor.patch，例如 v1.0.1'
+            exit 1
+          }
+          printf 'APP_VERSION=%s\n' "${RELEASE_TAG#v}" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+          persist-credentials: false
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: 'platforms;android-34 build-tools;34.0.0'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: true
+
+      - name: Prepare release signing
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import base64, os
+          from pathlib import Path
+          names = ['ANDROID_KEYSTORE_BASE64', 'ANDROID_KEYSTORE_PASSWORD', 'ANDROID_KEY_ALIAS', 'ANDROID_KEY_PASSWORD']
+          missing = [name for name in names if not os.environ.get(name)]
+          if missing:
+              raise SystemExit('缺少 GitHub Actions Secrets: ' + ', '.join(missing))
+          path = Path(os.environ['RUNNER_TEMP']) / 'qiafan-release.jks'
+          path.touch(mode=0o600)
+          path.write_bytes(base64.b64decode(os.environ['ANDROID_KEYSTORE_BASE64'], validate=True))
+          with open(os.environ['GITHUB_ENV'], 'a') as env:
+              env.write(f'ANDROID_KEYSTORE_PATH={path}\n')
+          PY
+
+      - name: Build signed release APK
+        env:
+          REQUIRE_RELEASE_SIGNING: 'true'
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        shell: bash
+        run: bash ./gradlew :androidApp:assembleRelease --no-daemon -PappVersionName="$APP_VERSION"
+
+      - name: Verify and package APK
+        shell: bash
+        run: |
+          APK="androidApp/build/outputs/apk/release/androidApp-release.apk"
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify "$APK"
+          "$ANDROID_HOME/build-tools/34.0.0/aapt" dump badging "$APK" > "$RUNNER_TEMP/apk-badging.txt"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          metadata = (Path(os.environ['RUNNER_TEMP']) / 'apk-badging.txt').read_text()
+          major, minor, patch = map(int, os.environ['APP_VERSION'].split('.'))
+          expected = major * 1_000_000 + minor * 1_000 + patch
+          package = metadata.splitlines()[0]
+          assert "name='com.example.qiafan'" in package, 'APK 包名不匹配'
+          assert f"versionName='{os.environ['APP_VERSION']}'" in package, 'APK 版本不匹配'
+          assert f"versionCode='{expected}'" in package, 'APK versionCode 不匹配'
+          assert 'application-debuggable' not in metadata, '不能发布 Debug APK'
+          print(package)
+          PY
+          mkdir -p release-assets
+          cp "$APK" "release-assets/qiafan-${RELEASE_TAG}.apk"
+          cd release-assets
+          sha256sum "qiafan-${RELEASE_TAG}.apk" > "qiafan-${RELEASE_TAG}.apk.sha256"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" release-assets/* --clobber
+          else
+            gh release create "$RELEASE_TAG" release-assets/* --verify-tag --title "恰饭 $RELEASE_TAG" --generate-notes
+          fi
+
+      - name: Remove runner signing material
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          (Path(os.environ['RUNNER_TEMP']) / 'qiafan-release.jks').unlink(missing_ok=True)
+          PY
