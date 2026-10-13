@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ApplicationInfo
 import android.content.res.ColorStateList
@@ -21,14 +22,18 @@ import android.text.SpannableString
 import android.text.Spanned
 import android.text.TextPaint
 import android.util.Log
+import android.util.Patterns
 import android.text.Editable
 import android.text.InputFilter
 import android.text.InputType
 import android.text.TextUtils
 import android.text.TextWatcher
 import android.text.method.LinkMovementMethod
+import android.text.style.StyleSpan
 import android.text.style.ClickableSpan
+import android.text.util.Linkify
 import android.view.Gravity
+import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
@@ -340,15 +345,16 @@ class FanfouActivity : AppCompatActivity() {
         generation++
         showingTabs = tabs
         root.removeAllViews()
+        val shellHost = FrameLayout(this)
+        root.addView(shellHost, FrameLayout.LayoutParams(-1, -1))
         val page = box().apply { setBackgroundColor(Color.WHITE) }
-        root.addView(page, FrameLayout.LayoutParams(-1, -1))
+        shellHost.addView(page, FrameLayout.LayoutParams(-1, -1))
         val contentWidth = dp(minOf(720, resources.configuration.screenWidthDp))
-        val readingHome = tabs && activeTab == "关注"
-        val barWrap = FrameLayout(this).apply { setBackgroundColor(Color.WHITE) }
-        if (readingHome) {
-            root.addView(barWrap, FrameLayout.LayoutParams(-1, dp(57), Gravity.TOP))
-            barWrap.elevation = dp(1).toFloat()
-        } else page.addView(barWrap, LinearLayout.LayoutParams(-1, dp(56)))
+        val barWrap = FrameLayout(this).apply {
+            setBackgroundColor(Color.WHITE)
+            elevation = dp(1).toFloat()
+        }
+        shellHost.addView(barWrap, FrameLayout.LayoutParams(-1, dp(57), Gravity.TOP))
         val bar = row().apply {
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(12), 0, dp(12), 0)
@@ -369,11 +375,9 @@ class FanfouActivity : AppCompatActivity() {
         }
         bar.addView(heading, LinearLayout.LayoutParams(0, -2, 1f))
         if (tabs && activeTab == "关注") bar.addView(iconButton("search", "搜索动态与用户") { showSearch() })
-        val headerDivider = divider()
-        if (readingHome) barWrap.addView(headerDivider, FrameLayout.LayoutParams(-1, dp(1), Gravity.BOTTOM))
-        else page.addView(headerDivider)
+        barWrap.addView(divider(), FrameLayout.LayoutParams(-1, dp(1), Gravity.BOTTOM))
         header?.let {
-            page.addView(it, LinearLayout.LayoutParams(-1, -2))
+            page.addView(it, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(57) })
         }
         val content = FrameLayout(this)
         page.addView(content, LinearLayout.LayoutParams(-1, 0, 1f))
@@ -383,11 +387,8 @@ class FanfouActivity : AppCompatActivity() {
             isFillViewport = true
             overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
             setBackgroundColor(Color.WHITE)
-            if (readingHome) {
-                // 浮在内容上的工具栏移出后，消息能连续滚过原工具栏区域。
-                setPadding(0, dp(57), 0, dp(65))
-                clipToPadding = false
-            }
+            setPadding(0, if (header == null) dp(57) else 0, 0, if (tabs) dp(65) else 0)
+            clipToPadding = false
         }
         currentScroll = scroll
         body = box().apply { setPadding(0, 0, 0, dp(24)) }
@@ -395,27 +396,21 @@ class FanfouActivity : AppCompatActivity() {
         content.addView(scroll, FrameLayout.LayoutParams(contentWidth, -1, Gravity.CENTER))
         var previousY = 0
         var directionTravel = 0
-        var headerHidden = false
-        var ignoreHeaderLayoutScroll = false
+        var chromeHidden = false
         var navChrome: View? = null
         var composeChrome: View? = null
         fun animateChrome(view: View?, hidden: Boolean, distance: Float) {
             view ?: return
             view.animate().cancel()
-            view.visibility = View.VISIBLE
             view.animate()
-                .alpha(if (hidden) 0f else 1f)
                 .translationY(if (hidden) distance else 0f)
                 .setDuration(220)
-                .withEndAction {
-                    if (headerHidden == hidden) view.visibility = if (hidden) View.INVISIBLE else View.VISIBLE
-                }
                 .start()
         }
         scroll.setOnScrollChangeListener { _, _, y, _, _ ->
             val dy = y - previousY
             val containsMessages = statusLoader != null || (tabs && activeTab == "通知")
-            if (containsMessages && !ignoreHeaderLayoutScroll) {
+            if (containsMessages) {
                 directionTravel = when {
                     dy > 0 -> directionTravel.coerceAtLeast(0) + dy
                     dy < 0 -> directionTravel.coerceAtMost(0) + dy
@@ -425,26 +420,14 @@ class FanfouActivity : AppCompatActivity() {
                     y <= dp(8) -> false
                     directionTravel >= dp(24) -> true
                     directionTravel <= -dp(24) -> false
-                    else -> headerHidden
+                    else -> chromeHidden
                 }
-                if (shouldHide != headerHidden) {
-                    headerHidden = shouldHide
-                    if (readingHome) {
-                        animateChrome(barWrap, shouldHide, -dp(57).toFloat())
-                        animateChrome(navChrome, shouldHide, dp(65).toFloat())
-                        animateChrome(composeChrome, shouldHide, dp(142).toFloat())
-                        directionTravel = 0
-                    } else {
-                        ignoreHeaderLayoutScroll = true
-                        barWrap.visibility = if (shouldHide) View.GONE else View.VISIBLE
-                        headerDivider.visibility = if (shouldHide) View.GONE else View.VISIBLE
-                        directionTravel = 0
-                        scroll.post {
-                            previousY = scroll.scrollY
-                            directionTravel = 0
-                            ignoreHeaderLayoutScroll = false
-                        }
-                    }
+                if (shouldHide != chromeHidden) {
+                    chromeHidden = shouldHide
+                    animateChrome(barWrap, shouldHide, -dp(57).toFloat())
+                    animateChrome(navChrome, shouldHide, dp(65).toFloat())
+                    animateChrome(composeChrome, shouldHide, dp(142).toFloat())
+                    directionTravel = 0
                 }
             }
             previousY = y
@@ -472,16 +455,13 @@ class FanfouActivity : AppCompatActivity() {
                 setBackgroundColor(Color.WHITE)
                 setPadding(dp(10), 0, dp(10), 0)
             }
-            val navWrap = FrameLayout(this).apply { setBackgroundColor(Color.WHITE) }
-            if (readingHome) {
-                navChrome = navWrap
-                root.addView(navWrap, FrameLayout.LayoutParams(-1, dp(65), Gravity.BOTTOM))
-                navWrap.elevation = dp(1).toFloat()
-                navWrap.addView(divider(), FrameLayout.LayoutParams(-1, dp(1), Gravity.TOP))
-            } else {
-                page.addView(divider())
-                page.addView(navWrap, LinearLayout.LayoutParams(-1, dp(64)))
+            val navWrap = FrameLayout(this).apply {
+                setBackgroundColor(Color.WHITE)
+                elevation = dp(1).toFloat()
             }
+            navChrome = navWrap
+            shellHost.addView(navWrap, FrameLayout.LayoutParams(-1, dp(65), Gravity.BOTTOM))
+            navWrap.addView(divider(), FrameLayout.LayoutParams(-1, dp(1), Gravity.TOP))
             navWrap.addView(nav, FrameLayout.LayoutParams(contentWidth, dp(64), Gravity.CENTER))
             listOf("关注", "通知", "热门").filter { it != "热门" || session.showHot }.forEach { name ->
                 val selected = name == activeTab
@@ -691,12 +671,16 @@ class FanfouActivity : AppCompatActivity() {
         card.addView(header)
         card.addView(mentionLabel(
             status.text.ifBlank { "（无文字）" }, 16, ink,
+            links = status.links,
+            emphasis = status.emphasis,
+            selectable = detail,
             knownUsers = listOf(status.user) + listOfNotNull(
                 status.replyToUserId.takeIf { it.isNotBlank() }?.let {
                     FanfouUser(it, status.replyToScreenName.ifBlank { it }, "", false)
                 }
             ),
-            bodyTouchTarget = if (detail) null else card
+            onBodyClick = if (detail) null else ({ openStatus(status) }),
+            onBodyLongPress = if (detail) null else ({ showStatusActions(status) })
         ).apply {
             top(10)
             setLineSpacing(dp(4).toFloat(), 1f)
@@ -980,7 +964,6 @@ class FanfouActivity : AppCompatActivity() {
         shell("动态详情", false, footer = replyComposer(status))
         renderStatusDetail(status)
         val turn = generation
-        showFloatingLoading("正在加载动态…")
         runIo(
             { DetailPayload(api.showStatus(status.id), runCatching { api.replies(status.id) }) },
             { payload ->
@@ -1070,7 +1053,10 @@ class FanfouActivity : AppCompatActivity() {
             comment.text.ifBlank { "（无文字）" },
             14,
             ink,
-            knownUsers = contextUsers
+            knownUsers = contextUsers,
+            links = comment.links,
+            emphasis = comment.emphasis,
+            selectable = true
         ).apply {
             top(5)
             setLineSpacing(dp(3).toFloat(), 1f)
@@ -1132,7 +1118,10 @@ class FanfouActivity : AppCompatActivity() {
             original.text.ifBlank { "（无文字）" },
             13,
             ink,
-            knownUsers = contextUsers
+            knownUsers = contextUsers,
+            links = original.links,
+            emphasis = original.emphasis,
+            selectable = true
         ).apply {
             top(9)
             setLineSpacing(dp(2).toFloat(), 1f)
@@ -1159,61 +1148,102 @@ class FanfouActivity : AppCompatActivity() {
         Glide.with(this@FanfouActivity).load(status.photo).into(image)
     }
 
-    /** 把饭否正文里的 @用户名 变成可点击的主页入口；显示名也可映射到已加载用户。 */
     private fun mentionLabel(
         text: String,
         size: Int,
         color: Int,
         bold: Boolean = false,
         knownUsers: List<FanfouUser> = emptyList(),
-        bodyTouchTarget: View? = null
+        links: List<FanfouTextLink> = emptyList(),
+        emphasis: List<FanfouTextEmphasis> = emptyList(),
+        selectable: Boolean = false,
+        onBodyClick: (() -> Unit)? = null,
+        onBodyLongPress: (() -> Unit)? = null
     ): TextView = label(text, size, color, bold).apply {
         val richText = SpannableString(text)
-        val mentions = Regex("@([\\p{L}\\p{N}_~-]+)").findAll(text).toList()
-        mentions.forEach { match ->
-            val userId = match.groupValues[1]
+        emphasis.forEach { range ->
+            if (range.start >= 0 && range.end <= text.length && range.start < range.end)
+                richText.setSpan(StyleSpan(Typeface.BOLD), range.start, range.end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
+        fun link(start: Int, end: Int, action: () -> Unit) {
             richText.setSpan(object : ClickableSpan() {
-                override fun onClick(widget: View) {
-                    val known = (knownUsers + listOfNotNull(currentUser)).firstOrNull {
-                        it.id.equals(userId, ignoreCase = true) || it.name == userId
-                    }
-                    openUser(known ?: FanfouUser(userId, userId, "", false))
-                }
-
+                override fun onClick(widget: View) = action()
                 override fun updateDrawState(drawState: TextPaint) {
                     drawState.color = accent
                     drawState.isUnderlineText = false
                 }
-            }, match.range.first, match.range.last + 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }, start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
+        val urls = mutableListOf<IntRange>()
+        fun openWeb(url: String) {
+            startActivity(Intent(this@FanfouActivity, WebPageActivity::class.java)
+                .putExtra(WebPageActivity.EXTRA_URL, url))
+        }
+        links.forEach { target ->
+            if (target.start >= 0 && target.end <= text.length && target.start < target.end &&
+                WebPageActivity.isWebUrl(target.url)) {
+                urls += target.start until target.end
+                link(target.start, target.end) { openWeb(target.url) }
+            }
+        }
+        val matcher = Patterns.WEB_URL.matcher(text)
+        while (matcher.find()) {
+            if (!Linkify.sUrlMatchFilter.acceptMatch(text, matcher.start(), matcher.end())) continue
+            val candidate = matcher.group().orEmpty().trimEnd('.', ',', ';', '!', '?', '。', '，', '；', '！', '？')
+            val url = if (candidate.contains("://")) candidate else "https://$candidate"
+            if (!WebPageActivity.isWebUrl(url)) continue
+            val range = matcher.start() until matcher.start() + candidate.length
+            if (urls.any { it.first <= range.last && range.first <= it.last }) continue
+            urls += range
+            link(range.first, range.last + 1) { openWeb(url) }
+        }
+        Regex("@([\\p{L}\\p{N}_~-]+)").findAll(text).forEach { match ->
+            if (urls.any { it.first <= match.range.last && match.range.first <= it.last }) return@forEach
+            val userId = match.groupValues[1]
+            link(match.range.first, match.range.last + 1) {
+                val known = (knownUsers + listOfNotNull(currentUser)).firstOrNull {
+                    it.id.equals(userId, ignoreCase = true) || it.name == userId
+                }
+                openUser(known ?: FanfouUser(userId, userId, "", false))
+            }
         }
         this.text = richText
-        if (mentions.isNotEmpty()) {
+        if (selectable) {
+            setTextIsSelectable(true)
+            highlightColor = 0x553A6855
+        } else {
             movementMethod = LinkMovementMethod.getInstance()
             highlightColor = Color.TRANSPARENT
-            // 非链接区域仍由动态卡片处理点击和长按，避免链接控件吞掉整段正文的触摸。
-            if (bodyTouchTarget != null) {
-                var touchingMention = false
-                setOnTouchListener { _, event ->
-                    if (event.actionMasked == MotionEvent.ACTION_DOWN) {
-                        val textLayout = layout
-                        val x = event.x - totalPaddingLeft + scrollX
-                        val y = event.y - totalPaddingTop + scrollY
-                        touchingMention = textLayout != null && y >= 0 && y < textLayout.height &&
-                            textLayout.getLineForVertical(y.toInt()).let { line ->
-                                x >= textLayout.getLineLeft(line) && x <= textLayout.getLineRight(line) &&
-                                    richText.getSpans(
-                                        textLayout.getOffsetForHorizontal(line, x),
-                                        textLayout.getOffsetForHorizontal(line, x),
-                                        ClickableSpan::class.java
-                                    ).isNotEmpty()
-                            }
-                    }
-                    if (touchingMention) false else {
-                        bodyTouchTarget.onTouchEvent(event)
-                        true
-                    }
-                }
+        }
+        fun spanAt(event: MotionEvent): ClickableSpan? {
+            val textLayout = layout ?: return null
+            val x = event.x - totalPaddingLeft + scrollX
+            val y = event.y - totalPaddingTop + scrollY
+            if (y < 0 || y >= textLayout.height) return null
+            val line = textLayout.getLineForVertical(y.toInt())
+            if (x < textLayout.getLineLeft(line) || x > textLayout.getLineRight(line)) return null
+            val offset = textLayout.getOffsetForHorizontal(line, x)
+            return richText.getSpans(offset, offset, ClickableSpan::class.java).firstOrNull {
+                offset >= richText.getSpanStart(it) && offset < richText.getSpanEnd(it)
             }
+        }
+        val detector = GestureDetector(this@FanfouActivity, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDown(event: MotionEvent) = true
+            override fun onSingleTapUp(event: MotionEvent): Boolean {
+                if (selectable && selectionStart != selectionEnd) return false
+                val span = spanAt(event)
+                if (span != null) span.onClick(this@apply) else if (!selectable) performClick()
+                return !selectable
+            }
+            override fun onLongPress(event: MotionEvent) {
+                if (onBodyLongPress != null) performLongClick()
+            }
+        })
+        if (onBodyClick != null) setOnClickListener { onBodyClick() }
+        if (onBodyLongPress != null) setOnLongClickListener { onBodyLongPress(); true }
+        setOnTouchListener { _, event ->
+            detector.onTouchEvent(event)
+            !selectable
         }
     }
 
@@ -1245,7 +1275,6 @@ class FanfouActivity : AppCompatActivity() {
 
     private fun openStatusById(id: String) {
         if (id.isBlank()) return
-        showFloatingLoading("正在加载动态…")
         val turn = generation
         runIo(
             { api.showStatus(id) },
@@ -1404,7 +1433,7 @@ class FanfouActivity : AppCompatActivity() {
         items.clear()
         shell("通知", true)
         notificationSnapshot?.let { renderNotifications(it) } ?: body.addView(loadingPlaceholders())
-        showFloatingLoading("正在读取通知…")
+        showFloatingLoading("正在读取通知…", showMessage = false)
         val turn = generation
         runIo(
             {
@@ -1577,7 +1606,7 @@ class FanfouActivity : AppCompatActivity() {
                 body.addView(loadingPlaceholders())
             }
         }
-        showFloatingLoading("正在读取热门话题…")
+        showFloatingLoading("正在读取热门话题…", showMessage = false)
         val turn = generation
         runIo(
             { api.trends() },
@@ -1979,7 +2008,10 @@ class FanfouActivity : AppCompatActivity() {
     }
 
     private fun drawer() {
-        val overlay = FrameLayout(this).apply { setBackgroundColor(0x99000000.toInt()) }
+        val overlay = FrameLayout(this).apply {
+            setBackgroundColor(0x99000000.toInt())
+            elevation = dp(24).toFloat()
+        }
         root.addView(overlay, FrameLayout.LayoutParams(-1, -1))
         overlay.setOnClickListener { root.removeView(overlay) }
         val panel = box().apply {
@@ -2003,7 +2035,7 @@ class FanfouActivity : AppCompatActivity() {
             top(5)
         })
         panel.addView(divider().apply { top(30) })
-        listOf("个人主页", "搜索", "浏览历史", "收藏", "刷新当前页", "设置").forEach { name ->
+        listOf("个人主页", "搜索", "浏览历史", "收藏", "设置").forEach { name ->
             panel.addView(menuEntry(name) {
                 root.removeView(overlay)
                 when (name) {
@@ -2018,11 +2050,6 @@ class FanfouActivity : AppCompatActivity() {
                             ((cursor?.toIntOrNull() ?: 1) + 1).toString()
                         }
                     ) { cursor -> api.favorites(cursor?.toIntOrNull() ?: 1) }
-                    "刷新当前页" -> when (activeTab) {
-                        "关注" -> if (statusLoader != null) loadStatuses(true) else showTab("关注")
-                        "通知" -> showNotifications()
-                        "热门" -> showTrends()
-                    }
                     "设置" -> showSettings()
                 }
             })
@@ -2495,7 +2522,7 @@ class FanfouActivity : AppCompatActivity() {
         }
     }
 
-    private fun showFloatingLoading(message: String) {
+    private fun showFloatingLoading(message: String, showMessage: Boolean = true) {
         val host = loadingHost ?: return
         loadingOverlay?.let { host.removeView(it) }
         val overlay = row().apply {
@@ -2512,11 +2539,11 @@ class FanfouActivity : AppCompatActivity() {
             contentDescription = message
         }
         overlay.addView(spinner, LinearLayout.LayoutParams(dp(20), dp(20)))
-        overlay.addView(label(message, 13, muted).apply {
+        if (showMessage) overlay.addView(label(message, 13, muted).apply {
             setPadding(dp(9), 0, 0, 0)
         })
         host.addView(overlay, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
-            topMargin = dp(if (showingTabs && activeTab == "关注") 69 else 12)
+            topMargin = (currentScroll?.paddingTop ?: 0) + dp(12)
         })
         loadingOverlay = overlay
     }

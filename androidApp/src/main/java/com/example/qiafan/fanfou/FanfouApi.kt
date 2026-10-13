@@ -1,6 +1,12 @@
 package com.example.qiafan.fanfou
 
 import android.text.Html
+import android.text.SpannableStringBuilder
+import android.text.Spanned
+import android.text.style.StyleSpan
+import android.text.style.URLSpan
+import android.graphics.Typeface
+import android.net.Uri
 import android.util.Log
 import com.example.qiafan.BuildConfig
 import org.json.JSONArray
@@ -41,6 +47,9 @@ internal data class FanfouUser(
     val largeAvatar: String = avatar
 )
 
+internal data class FanfouTextLink(val start: Int, val end: Int, val url: String)
+internal data class FanfouTextEmphasis(val start: Int, val end: Int)
+
 internal data class FanfouStatus(
     val id: String,
     val text: String,
@@ -52,7 +61,9 @@ internal data class FanfouStatus(
     val repostId: String?,
     val replyToStatusId: String = "",
     val replyToUserId: String = "",
-    val replyToScreenName: String = ""
+    val replyToScreenName: String = "",
+    val links: List<FanfouTextLink> = emptyList(),
+    val emphasis: List<FanfouTextEmphasis> = emptyList()
 )
 
 internal data class FanfouTrend(val name: String, val query: String)
@@ -134,10 +145,10 @@ internal class FanfouApi(private val credentials: () -> FanfouCredentials) {
         )))
 
     fun publicSearch(query: String, maxId: String? = null): List<FanfouStatus> =
-        statuses(apiGet("/search/public_timeline.json", page(maxId) + ("q" to query)))
+        statuses(apiGet("/search/public_timeline.json", page(maxId) + ("q" to query)), searchHighlights = true)
 
     fun userSearch(userId: String, query: String, maxId: String? = null): List<FanfouStatus> =
-        statuses(apiGet("/search/user_timeline.json", page(maxId) + mapOf("id" to userId, "q" to query)))
+        statuses(apiGet("/search/user_timeline.json", page(maxId) + mapOf("id" to userId, "q" to query)), searchHighlights = true)
 
     fun searchUsers(query: String): List<FanfouUser> =
         users(apiGet("/search/users.json", mapOf("q" to query, "count" to "20")))
@@ -377,9 +388,11 @@ internal class FanfouApi(private val credentials: () -> FanfouCredentials) {
         )
     }
 
-    private fun statuses(body: String): List<FanfouStatus> {
+    private fun statuses(body: String, searchHighlights: Boolean = false): List<FanfouStatus> {
         val array = JSONArray(body)
-        return (0 until array.length()).mapNotNull { array.optJSONObject(it)?.let(::statusFrom) }
+        return (0 until array.length()).mapNotNull { array.optJSONObject(it)?.let { obj ->
+            statusFrom(obj, searchHighlights)
+        } }
     }
 
     private fun users(body: String): List<FanfouUser> {
@@ -397,11 +410,44 @@ internal class FanfouApi(private val credentials: () -> FanfouCredentials) {
         )
     }
 
-    private fun statusFrom(obj: JSONObject): FanfouStatus {
+    private fun statusFrom(obj: JSONObject, searchHighlights: Boolean = false): FanfouStatus {
         val photo = obj.optJSONObject("photo")
+        val decoded = SpannableStringBuilder(Html.fromHtml(obj.optString("text")))
+        if (searchHighlights) {
+            val wrappers = Regex("<(strong|em)>(.*?)</\\1>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+            wrappers.findAll(decoded).toList().asReversed().forEach { match ->
+                val openingLength = match.groupValues[1].length + 2
+                val closingLength = openingLength + 1
+                val start = match.range.first
+                val contentEnd = match.range.last + 1 - closingLength
+                decoded.delete(contentEnd, match.range.last + 1)
+                decoded.delete(start, start + openingLength)
+                val end = contentEnd - openingLength
+                if (end > start) decoded.setSpan(StyleSpan(Typeface.BOLD), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+        }
+        val fullText = decoded.toString()
+        val text = fullText.trim()
+        val leading = fullText.indexOf(text).coerceAtLeast(0)
+        val links = decoded.getSpans(0, decoded.length, URLSpan::class.java).mapNotNull { span ->
+            val start = decoded.getSpanStart(span) - leading
+            val end = decoded.getSpanEnd(span) - leading
+            val uri = Uri.parse(span.url)
+            if (start < 0 || end > text.length || start >= end ||
+                uri.scheme?.lowercase() !in listOf("http", "https") || uri.host.isNullOrBlank() ||
+                text.substring(start, end).startsWith("@")
+            ) null else FanfouTextLink(start, end, span.url)
+        }
+        val emphasis = if (searchHighlights) decoded.getSpans(0, decoded.length, StyleSpan::class.java)
+            .mapNotNull { span ->
+                val start = decoded.getSpanStart(span) - leading
+                val end = decoded.getSpanEnd(span) - leading
+                if (span.style and (Typeface.BOLD or Typeface.ITALIC) == 0 || start < 0 || end > text.length || start >= end)
+                    null else FanfouTextEmphasis(start, end)
+            } else emptyList()
         return FanfouStatus(
             obj.optString("id"),
-            plain(obj.optString("text")),
+            text,
             obj.optString("created_at"),
             userFrom(obj.optJSONObject("user") ?: JSONObject()),
             obj.optBoolean("favorited"),
@@ -412,7 +458,9 @@ internal class FanfouApi(private val credentials: () -> FanfouCredentials) {
             obj.optString("repost_status_id").takeIf { it.isNotBlank() },
             obj.optString("in_reply_to_status_id"),
             obj.optString("in_reply_to_user_id"),
-            obj.optString("in_reply_to_screen_name")
+            obj.optString("in_reply_to_screen_name"),
+            links,
+            emphasis
         )
     }
 
