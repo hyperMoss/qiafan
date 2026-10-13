@@ -59,6 +59,7 @@ REQUIRE_RELEASE_SIGNING=true ./gradlew :androidApp:assembleRelease
 
 ## 验证记录
 
+- 2026-10-13：[v1.0.2 发布工作流](https://github.com/hyperMoss/qiafan/actions/runs/38381984674) 全部通过。[Release Assets](https://github.com/hyperMoss/qiafan/releases/tag/v1.0.2) 包含 `qiafan-v1.0.2.apk`（3,387,071 字节）和 `.apk.sha256`。下载后的 APK 验签通过，包名为 `com.example.qiafan`，版本为 `1.0.2`，versionCode 为 `1000002`，未开启 Debug。SHA-256 与附件一致，为 `754bdd3bff57149c361f065cad6182ae0322d570f0c98f0fe05a49cf59bc31f7`。保留已有 `v1.0.1` 标签及附件，新版本包含正文选择、网页浏览、搜索加粗、侧栏与工具条位移修复。
 - 2026-10-08：两个工作流通过 actionlint；本机临时测试证书下 `assembleRelease` 成功，apksigner 验签通过，并确认正式包名 `com.example.qiafan`、标签覆盖版本 `1.0.1` 和 versionCode `1000001`。测试证书已删除，不用于正式发布。
 - 2026-10-08：正式证书及四个签名 Secrets 已配置；本机正式签名构建和验签通过。[Android CI](https://github.com/hyperMoss/qiafan/actions/runs/37793359730) 的 Debug 与 Release 构建通过；[Android Release](https://github.com/hyperMoss/qiafan/actions/runs/37794322295) 正式签名构建、包信息校验及 Assets 上传全部通过。
 - [v1.0.1 Release](https://github.com/hyperMoss/qiafan/releases/tag/v1.0.1) 的 Assets 包含 `qiafan-v1.0.1.apk`（3,380,054 字节）和 `.apk.sha256`。下载后的 APK 验签通过，证书与本机正式证书一致；包名 `com.example.qiafan`、版本 `1.0.1`、versionCode `1000001`，未开启 Debug。SHA-256 与附件一致：`e7673630460bed9d8e705e57dbdb550f80337cf903c45818f9ef8c4372ceb1e5`。本次验证发布产物，不替代真实饭否功能及设备触控验收。
