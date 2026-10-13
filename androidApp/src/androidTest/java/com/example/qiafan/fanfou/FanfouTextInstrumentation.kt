@@ -6,12 +6,19 @@ import android.os.Bundle
 import org.json.JSONObject
 
 class FanfouTextInstrumentation : Instrumentation() {
+    private var profileProbe = false
     override fun onCreate(arguments: Bundle?) {
         super.onCreate(arguments)
+        profileProbe = arguments?.getString("probe") == "profile"
         start()
     }
 
     override fun onStart() {
+        if (profileProbe) {
+            val (code, output) = FanfouProfileProbe.read(targetContext)
+            finish(code, output)
+            return
+        }
         val result = runCatching {
             val api = FanfouApi { FanfouCredentials("", "") }
             val parser = FanfouApi::class.java.getDeclaredMethod(
@@ -45,10 +52,26 @@ class FanfouTextInstrumentation : Instrumentation() {
             val direct = parse("<strong>http</strong> / <em>https</em>", true)
             check(direct.text == "http / https")
             check(direct.emphasis == listOf(FanfouTextEmphasis(0, 4), FanfouTextEmphasis(7, 12)))
+
+            val mention = parse("前 @<a href=\"https://fanfou.com/miao.l\">LeeMay</a> 后", false)
+            check(mention.text == "前 @LeeMay 后")
+            check(mention.mentions == listOf(FanfouMention(2, 9, "miao.l")))
+            check(mention.links.isEmpty())
+
+            val innerMention = parse("<a href=\"http://fanfou.com/~abc\">@有 空格</a>", false)
+            check(innerMention.mentions == listOf(FanfouMention(0, 5, "~abc")))
+
+            val spoof = parse("@<a href=\"https://fanfou.com.evil.test/miao.l\">LeeMay</a>", false)
+            check(spoof.mentions.isEmpty())
+
+            check(FanfouApiException(403, "已向 LeeMay 发出关注请求，请等待确认。").pendingFollowRequest)
+            check(!FanfouApiException(403, "无权访问").pendingFollowRequest)
+            check(!FanfouApiException(500, "已向 LeeMay 发出关注请求，请等待确认。").pendingFollowRequest)
+            check(!FanfouApiException(401, "已向 LeeMay 发出关注请求，请等待确认。").pendingFollowRequest)
         }
         val output = Bundle().apply {
             putString("stream", result.fold(
-                { "Search text parsing passed 6 cases." },
+                { "Text and follow response checks passed 13 cases." },
                 { "Search text parsing failed: ${it.stackTraceToString()}" }
             ))
         }

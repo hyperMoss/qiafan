@@ -30,16 +30,53 @@ gh secret set ANDROID_KEY_PASSWORD --repo hyperMoss/qiafan
 
 ## 发布新版本
 
-1. 更新根目录 `VERSION`，例如 `1.0.1`，完成测试并提交当前版本代码。
-2. 推送代码，再推送同名版本标签：
+先完成测试并提交功能代码和发布脚本，保持 `master` 工作区干净。需要安装 GitHub CLI 并登录，仓库的正式签名 Secrets 须已配置：
 
 ```sh
-git push origin master
-git tag -a v1.0.1 -m "恰饭 1.0.1"
-git push origin v1.0.1
+brew install gh
+gh auth login
 ```
 
-3. 在 GitHub Actions 查看 Android Release；成功后到 Releases 下载 `qiafan-v1.0.1.apk`。
+发布时运行一个命令，例如发布 `1.0.3`：
+
+```sh
+./release.sh 1.0.3
+```
+
+脚本校验版本和远端分支，将根目录 `VERSION` 更新为指定版本，只提交这个版本文件，创建 `v1.0.3` 标签，再原子推送 `master` 和标签。标签推送触发现有 Android Release 工作流，云端完成正式签名构建、验签和 APK 包信息检查。脚本等待对应标签与提交的工作流结束，确认 Release 已公开、APK 和 SHA-256 两个 Assets 均非空，才输出发布完成及 Release 链接。签名材料只由云端工作流读取，脚本不读取本机 keystore 或密码。
+
+版本号也可写成 `v1.0.3`；省略版本时使用 `VERSION` 的当前值。新版本须大于远端所有有效版本标签，不能小于当前 `VERSION`。脚本不覆盖现有标签，不强制推送，不自动合并远端代码。若 `master` 落后或分叉，先同步代码再发布。
+
+先查看计划，保留所有文件和 Git 状态：
+
+```sh
+./release.sh 1.0.3 --dry-run
+```
+
+预演只做本机检查，不访问 GitHub。实际新发布会拒绝未提交文件，包括未跟踪文件，避免遗漏待发布代码。请先提交相关文件，或将暂时不发布的改动放入 stash；不要把签名目录、密码或令牌加入提交。
+
+网络中断或终端退出后，保留已完成的提交和标签，用相同版本继续：
+
+```sh
+./release.sh 1.0.3 --resume
+```
+
+远端已有标签时，继续模式只读取其工作流和 Assets，允许本机存在后续未提交改动。远端没有标签但本机标签存在时，继续模式推送该标签对应的提交；标签的 `VERSION` 必须匹配。继续模式不会更新版本文件、重新提交代码或移动标签。
+
+工作流失败时，先根据 Actions 日志修复构建环境或 Secrets，再重跑同一标签的发布：
+
+```sh
+./release.sh 1.0.3 --retry
+```
+
+`--retry` 在继续模式的基础上重跑失败工作流，并再次等待结果。代码问题需要修复后发布更大的新版本；同一标签重跑使用原提交。工作流不存在、失败或 Assets 缺失时，脚本返回非零状态并输出原因。脚本最长等待 90 秒发现标签推送的工作流；发现后由 `gh run watch` 持续等待，按 Ctrl+C 停止本机等待不会取消云端任务。
+
+本机回归检查使用临时 Git 仓库和模拟 GitHub CLI，不产生真实发布：
+
+```sh
+python3 tests/release-script-test.py
+shellcheck release.sh
+```
 
 标签仅接受 `vmajor.minor.patch`，暂不接受预发布后缀。CI 使用标签版本写入 APK 的 `versionName`；本地构建使用 `VERSION`。`versionCode = major × 1000000 + minor × 1000 + patch`，major 范围 0..2000，minor/patch 范围 0..999。每次更新须使用更大的版本号；已发布标签保持不变。
 
@@ -59,6 +96,8 @@ REQUIRE_RELEASE_SIGNING=true ./gradlew :androidApp:assembleRelease
 
 ## 验证记录
 
+- 2026-10-13：`release.sh` 通过 ShellCheck 和 9 项本机回归，覆盖预演、非法版本、脏工作区、版本提交及准确标签推送、已有标签继续、本机标签补推、工作流失败、缺少 Assets、失败重跑和工作流未出现。测试使用临时 Git 仓库；未创建或推送真实新版本。
+- 2026-10-13：实际执行 `./release.sh 1.0.2 --resume`，只读检查已有远端标签，定位到提交 `728b00e` 的成功发布工作流 `38381984674`，并确认公开 Release 中 APK 与 SHA-256 Assets 均非空。未提交、推送或重跑该工作流；这项检查验证真实 GitHub 查询路径，新版本发布和失败重跑仍只有本机模拟验证。
 - 2026-10-13：[v1.0.2 发布工作流](https://github.com/hyperMoss/qiafan/actions/runs/38381984674) 全部通过。[Release Assets](https://github.com/hyperMoss/qiafan/releases/tag/v1.0.2) 包含 `qiafan-v1.0.2.apk`（3,387,071 字节）和 `.apk.sha256`。下载后的 APK 验签通过，包名为 `com.example.qiafan`，版本为 `1.0.2`，versionCode 为 `1000002`，未开启 Debug。SHA-256 与附件一致，为 `754bdd3bff57149c361f065cad6182ae0322d570f0c98f0fe05a49cf59bc31f7`。保留已有 `v1.0.1` 标签及附件，新版本包含正文选择、网页浏览、搜索加粗、侧栏与工具条位移修复。
 - 2026-10-08：两个工作流通过 actionlint；本机临时测试证书下 `assembleRelease` 成功，apksigner 验签通过，并确认正式包名 `com.example.qiafan`、标签覆盖版本 `1.0.1` 和 versionCode `1000001`。测试证书已删除，不用于正式发布。
 - 2026-10-08：正式证书及四个签名 Secrets 已配置；本机正式签名构建和验签通过。[Android CI](https://github.com/hyperMoss/qiafan/actions/runs/37793359730) 的 Debug 与 Release 构建通过；[Android Release](https://github.com/hyperMoss/qiafan/actions/runs/37794322295) 正式签名构建、包信息校验及 Assets 上传全部通过。

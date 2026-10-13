@@ -4,7 +4,7 @@
 
 ## GitHub 自动发布
 
-推送 `v1.0.1` 这样的版本标签后，GitHub Actions 自动构建正式签名 APK 并上传到对应 Release，同时提供 SHA-256 校验文件。版本、签名 Secrets 和发布步骤见 [Android 自动发布说明](docs/android-release.md)。正式签名配置完成前，工作流会停止发布。
+完成测试并提交功能代码后，在干净的 `master` 工作区运行 `./release.sh 1.0.3`，即可更新版本、打标签、推送并等待 GitHub Actions 发布。脚本确认对应 Release 的 Assets 中有非空 APK 和 SHA-256 校验文件后才报告完成。可用 `--dry-run` 预演、`--resume` 继续、`--retry` 重跑失败的工作流。版本、签名 Secrets 和完整步骤见 [Android 自动发布说明](docs/android-release.md)。正式签名配置完成前，工作流会停止发布。
 
 2026-10-08 已完成正式签名配置和云端发布：[v1.0.1 的 Assets](https://github.com/hyperMoss/qiafan/releases/tag/v1.0.1) 提供 APK 与校验文件。已下载验证 SHA-256、正式签名证书、包名和版本；云端 Debug/Release 编译均通过。
 
@@ -28,7 +28,7 @@
 
 - 主入口：关注、通知、热门。热门可在设置中关闭，关闭后不请求热门接口。
 - 左侧导航：当前账号头像与首位的个人主页入口，其后是搜索、浏览历史、收藏和设置。侧栏覆盖头栏、底栏和发布按钮。搜索可选全站动态、用户、指定用户内。
-- 用户资料页：点击作者后显示高清头像、签名和按时间排序的动态；不显示资料页子标签。
+- 用户资料页：点击作者或正文提及后，先读取真实用户资料，显示头像、昵称和签名；不显示资料页子标签。未关注的受保护用户显示关注锁和“申请关注”，获准后才能读取动态。申请提交后弹出等待通过提示，本次会话显示“已申请”并防止重复点击，不把申请状态当作已关注。
 - 热门页：顶部可搜索动态或话题并查看本机最近搜索；子页包括热门话题与“随便看看”公开动态。
 - 动态列表：首次进入关注页显示铺满可视区域的卡片骨架和小浮层；切换标签或从详情返回时立即恢复本次会话已加载的动态和滚动位置，不重复请求；下拉刷新或双击当前的“关注”入口时保留已有内容并刷新，滚动到底自动分页。关注页向下浏览时，顶栏向上、底栏和圆形发布按钮向下滑出；反向滚动或回到顶部时恢复。通知、搜索及用户时间线使用同一套位移动画，主标签底栏随顶栏一起收起。工具条不切换可见性或透明度，正文视口及内边距保持固定。列表图片按比例预览，点图片查看原图；点动态进入整页详情，点作者进入用户资料页。列表底部不显示操作按钮，可点右上角“更多”或长按打开操作菜单；自己发布的动态才显示删除，二次确认并由服务端成功后才从当前列表和会话缓存移除；详情页保留收藏、快转按钮。
 - 通知：按提及、私信和关注请求分栏显示。未读数来自通知计数接口，列表各自从对应接口加载。私信页只展示已取得的收件箱内容，并可尝试发送文本私信；不把它冒充完整的服务端会话历史。
@@ -42,14 +42,16 @@
 
 ### 编译与安装
 
+- 2026-10-13：受保护主页修复后，`:androidApp:assembleDebug :androidApp:assembleDebugAndroidTest --offline --no-daemon` 通过，设备检查通过 13 项。最终 `installDebug` 的模拟器属性查询超时，改用 `adb install -r` 成功覆盖安装主应用和测试 APK；既有弃用及 D8 警告仍在。
 - 2026-10-13：`:androidApp:installDebug --offline --no-daemon` 编译并覆盖安装到 MuMu Android 12。`:androidApp:assembleDebugAndroidTest` 通过，原生解析测试通过六项用例，覆盖转义搜索高亮、网址连续性、链接偏移和非搜索正文边界。构建仍有既有的弃用及 D8 Kotlin 元数据警告。
-- 解析回归可在安装 Debug 主应用和 `androidApp/build/outputs/apk/androidTest/debug/androidApp-debug-androidTest.apk` 后运行 `adb shell am instrument -w com.example.qiafan.dev.test/com.example.qiafan.fanfou.FanfouTextInstrumentation`。成功输出为 `Search text parsing passed 6 cases.`。运行会重启测试进程，不清除登录数据。
+- 解析回归可在安装 Debug 主应用和 `androidApp/build/outputs/apk/androidTest/debug/androidApp-debug-androidTest.apk` 后运行 `adb shell am instrument -w com.example.qiafan.dev.test/com.example.qiafan.fanfou.FanfouTextInstrumentation`。成功输出为 `Text and follow response checks passed 13 cases.`。覆盖搜索高亮、规范提及链接及申请待确认响应的边界；普通 403、401 和 500 不会被当作申请成功。运行会重启测试进程，不清除登录数据。
 - 2026-10-08：`./install-debug.sh --offline` 编译并安装成功（模拟器及已连接的 Android 12 设备），覆盖正文提及高亮及转发原文改动；构建仍有既有的弃用和 D8 Kotlin 元数据警告。
 - 2026-10-05：`./gradlew :androidApp:compileDebugKotlin --offline --no-daemon` 编译通过。
 - 2026-10-05：`./install-debug.sh --offline` 执行成功，Debug APK 位于 `androidApp/build/outputs/apk/debug/androidApp-debug.apk`，已安装到 Android 12 模拟器。
 
 ### 真实饭否联调
 
+- 2026-10-13：设备已有会话读取 HTML 格式正文，`@LeeMay` 的真实主页链接指向 `miao.l`；`users/show` 返回昵称 LeeMay、头像、14 字签名、`protected=true`、`following=false`。请求申请关注后，服务端返回“已向 LeeMay 发出关注请求，请等待确认。”，客户端将这条明确的待确认响应识别为申请状态；其他错误仍显示失败。未把等待通过当作已关注。
 - 2026-10-13：设备已有会话读取 `http` 搜索结果，关键词加粗且网页地址保持完整；打开真实动态后，正文网页链接和 `@砂音色` 主页跳转通过。未发布、转发或删除动态。
 - 2026-10-08：通过设备已有会话读取真实提及并打开用户主页；本轮没有发送转发，转发写入服务端及超长草稿编辑流程尚未设备验收。
 - 使用设备上已有的授权会话，从“通知 / @我的”打开一条确实带有回复关系的提及，再通过“查看原动态”打开 `@amouse` 的真实原动态。
@@ -58,6 +60,7 @@
 
 ### 设备目视验收
 
+- 2026-10-13：MuMu Android 12 从真实搜索结果的 `@LeeMay` 打开 `@miao.l` 主页，正确显示头像、昵称、完整签名及关注锁。点击“申请关注”后出现“关注申请已发送 / 已发送关注申请，等待对方通过”弹窗；关闭后按钮显示禁用的“已申请”，再次点击无新弹窗，返回并重新打开主页仍显示“已申请”，内容保持锁定。验收期间模拟器时间曾比服务器慢约 46 分钟，产生 `Expired timestamp`，同步时钟后接口恢复。对方尚未批准，批准后的内容读取未验收；首次申请的正常 200 响应、跨账号切换及提交中返回重开的并发路径尚未设备验收。
 - 2026-10-13：工具条仅使用位移后，Debug 编译安装通过。MuMu 的关注页已验证顶栏、底栏和发布按钮滑出及反向恢复；通知页已验证顶栏、底栏收起与恢复，详情返回和侧栏覆盖正常。源码已删除工具条的 `GONE`/`INVISIBLE` 切换及显隐引发的滚动补偿。未测量帧率或覆盖所有消息页，不把该结果当作其他渲染卡顿已消除的证明。
 - 2026-10-13：MuMu Android 12 真实详情长按出现原生选区手柄及“复制、分享、全选”浮条，复制的片段可粘贴到输入框，验收草稿已清除且未发送。正文网址可打开 WebView，右上角“浏览器”已跳转系统浏览器。`solidot.org` 网页内容加载成功；另一个 HTTP 链接升级 HTTPS 后返回 `ERR_CONNECTION_CLOSED`，内置页面正确显示错误与重试。详情无加载浮层，通知读取浮层无提示文字，热门空状态正常；侧栏覆盖头栏、底栏及发布按钮，刷新入口已移除。
 - 2026-10-13：验收期间模拟器中的应用两次处于 `TN` 暂停状态，ANR 记录显示线程停在 `do_signal_stop`；恢复进程后完成文本选择验收。本轮未重测非空评论选区、所有网页重定向、网页历史返回及所有设备尺寸。

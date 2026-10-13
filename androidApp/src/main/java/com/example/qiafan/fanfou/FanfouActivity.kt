@@ -115,6 +115,10 @@ class FanfouActivity : AppCompatActivity() {
         private const val STATUS_FAILED = "failed"
     }
     private var timelineProfile: FanfouUser? = null
+    private enum class ProfileRelation { SELF, FOLLOWING, OPEN, LOCKED, PENDING, UNKNOWN }
+    private val pendingFollowIds = mutableSetOf<String>()
+    private var loadedProfileId: String? = null
+    private val profileFollowInFlight = mutableSetOf<String>()
     private var chatPeer: FanfouUser? = null
     private var commentTarget: FanfouStatus? = null
     private var replyList: List<FanfouStatus> = emptyList()
@@ -216,6 +220,9 @@ class FanfouActivity : AppCompatActivity() {
         replyInFlight.clear()
         deleteInFlight.clear()
         followRequestInFlight.clear()
+        pendingFollowIds.clear()
+        loadedProfileId = null
+        profileFollowInFlight.clear()
         chatPeer = null
         chatLog = null
         chatLines.clear()
@@ -605,20 +612,25 @@ class FanfouActivity : AppCompatActivity() {
                 if (turn != generation) return@runIo
                 busy = false
                 hideFloatingLoading()
-                if (items.isEmpty()) {
+                val deniedProfile = timelineProfile?.takeIf { (error as? FanfouApiException)?.code == 403 }
+                if (deniedProfile != null) {
+                    val locked = deniedProfile.copy(protected = true, following = false)
+                    timelineProfile = locked
+                    statusLoader = null
+                    items.clear()
+                    nextId = null
                     body.removeAllViews()
-                    timelineProfile?.let { body.addView(profileHeader(it)) }
-                    if (showingTabs && activeTab == "热门" && exploreSection == "随便看看") {
-                        addExploreHeader()
+                    body.addView(profileHeader(locked))
+                    body.addView(emptyState("此用户已开启关注锁", "关注获准后才能查看动态、照片和收藏。"))
+                } else {
+                    if (items.isEmpty()) {
+                        body.removeAllViews()
+                        timelineProfile?.let { body.addView(profileHeader(it)) }
+                        if (showingTabs && activeTab == "热门" && exploreSection == "随便看看") addExploreHeader()
+                        body.addView(emptyState("暂时无法读取动态", safeMessage(error)))
                     }
-                    val denied = timelineProfile?.protected == true &&
-                        (error as? FanfouApiException)?.code == 403
-                    body.addView(emptyState(
-                        if (denied) "无权查看此用户的动态" else "暂时无法读取动态",
-                        if (denied) "该账号的可见范围由饭否服务器决定。" else safeMessage(error)
-                    ))
+                    body.addView(errorRow("加载失败：" + safeMessage(error)) { loadStatuses(reset) })
                 }
-                body.addView(errorRow("加载失败：" + safeMessage(error)) { loadStatuses(reset) })
             }
         )
     }
@@ -673,6 +685,7 @@ class FanfouActivity : AppCompatActivity() {
             status.text.ifBlank { "（无文字）" }, 16, ink,
             links = status.links,
             emphasis = status.emphasis,
+            mentions = status.mentions,
             selectable = detail,
             knownUsers = listOf(status.user) + listOfNotNull(
                 status.replyToUserId.takeIf { it.isNotBlank() }?.let {
@@ -918,27 +931,178 @@ class FanfouActivity : AppCompatActivity() {
         )
     }
 
-    private fun openUser(user: FanfouUser) {
+    private fun profileRelation(user: FanfouUser): ProfileRelation = when {
+        user.id == currentUser?.id -> ProfileRelation.SELF
+        user.following == true -> ProfileRelation.FOLLOWING
+        user.id in pendingFollowIds -> ProfileRelation.PENDING
+        !user.protected -> ProfileRelation.OPEN
+        user.following == false -> ProfileRelation.LOCKED
+        else -> ProfileRelation.UNKNOWN
+    }
+
+    private fun openUser(user: FanfouUser, guessedNickname: String? = null) {
         if (user.id.isBlank()) return
-        session.remember(HistoryEntry("user", user.id, user.name))
-        showTimeline(user.name.ifBlank { "@" + user.id }, profile = user) {
-            api.userTimeline(user.id, it)
-        }
-        currentPage = { openUser(user) }
+        enterPage { openUser(user, guessedNickname) }
+        statusLoader = null
+        timelineProfile = user
+        loadedProfileId = null
+        items.clear()
+        nextId = null
+        busy = false
+        shell(user.name.ifBlank { "@" + user.id }, false)
+        body.addView(profileHeader(user))
+        body.addView(loadingPlaceholders())
+        showFloatingLoading("正在读取用户资料…")
         val turn = generation
         runIo(
-            { api.showUser(user.id) },
-            { full ->
-                if (turn != generation || timelineProfile?.id != user.id) return@runIo
-                timelineProfile = full
-                val first = body.getChildAt(0)
-                if (first?.tag == "profile-header") {
-                    body.removeViewAt(0)
-                    body.addView(profileHeader(full), 0)
+            {
+                try {
+                    api.showUser(user.id)
+                } catch (error: FanfouApiException) {
+                    if (error.code != 404 || guessedNickname == null) throw error
+                    val matches = api.searchUsers(guessedNickname).filter { it.name == guessedNickname }
+                        .distinctBy { it.id }
+                    if (matches.size != 1) throw error
+                    api.showUser(matches.single().id)
                 }
             },
-            { /* Keep the summary already included in the timeline response. */ }
+            { full ->
+                if (turn != generation) return@runIo
+                timelineProfile = full
+                loadedProfileId = full.id
+                session.remember(HistoryEntry("user", full.id, full.name))
+                currentPage = { openUser(full) }
+                if (full.protected && full.following == null && full.id != currentUser?.id) {
+                    body.removeAllViews()
+                    body.addView(profileHeader(full))
+                    resolveProfileRelation(full, turn)
+                } else showProfileContent(full)
+            },
+            { error ->
+                if (turn != generation) return@runIo
+                hideFloatingLoading()
+                body.removeAllViews()
+                body.addView(profileHeader(user))
+                body.addView(errorRow("无法读取用户资料：" + safeMessage(error)) {
+                    restoringPage = true
+                    openUser(user, guessedNickname)
+                    restoringPage = false
+                })
+            }
         )
+    }
+
+    private fun resolveProfileRelation(user: FanfouUser, turn: Int) {
+        runIo(
+            {
+                val me = currentUser ?: api.verify()
+                user.copy(following = api.isFollowing(me.id, user.id))
+            },
+            { full ->
+                if (turn != generation) return@runIo
+                showProfileContent(full)
+            },
+            { error ->
+                if (turn != generation) return@runIo
+                hideFloatingLoading()
+                body.removeAllViews()
+                body.addView(profileHeader(user))
+                body.addView(emptyState("此用户已开启关注锁", "关注获准后才能查看动态、照片和收藏。"))
+                body.addView(errorRow("无法确认关注关系：" + safeMessage(error)) {
+                    showFloatingLoading("正在读取关注关系…")
+                    resolveProfileRelation(user, turn)
+                })
+            }
+        )
+    }
+
+    private fun showProfileContent(user: FanfouUser) {
+        timelineProfile = user
+        hideFloatingLoading()
+        when (profileRelation(user)) {
+            ProfileRelation.LOCKED, ProfileRelation.PENDING, ProfileRelation.UNKNOWN -> {
+                statusLoader = null
+                items.clear()
+                nextId = null
+                busy = false
+                body.removeAllViews()
+                body.addView(profileHeader(user))
+                body.addView(emptyState("此用户已开启关注锁", "关注获准后才能查看动态、照片和收藏。"))
+            }
+            else -> {
+                pendingFollowIds.remove(user.id)
+                statusLoader = { cursor -> api.userTimeline(user.id, cursor) }
+                nextCursor = { received, _ -> received.lastOrNull()?.id }
+                loadStatuses(true)
+            }
+        }
+    }
+
+    private fun followProfile(user: FanfouUser) {
+        if (loadedProfileId != user.id) return
+        val requestSession = session.credentials() ?: return
+        if (profileRelation(user) in listOf(ProfileRelation.SELF, ProfileRelation.FOLLOWING, ProfileRelation.PENDING, ProfileRelation.UNKNOWN) ||
+            !profileFollowInFlight.add(user.id)) return
+        val turn = generation
+        val requestApi = FanfouApi { requestSession }
+        refreshProfileHeader(user)
+        runIo(
+            {
+                check(session.credentials() == requestSession) { "登录会话已变更" }
+                val accepted = when (val result = requestApi.follow(user.id)) {
+                    is FanfouFollowResult.Accepted -> result.user
+                    FanfouFollowResult.Pending -> user.copy(following = false)
+                }
+                runCatching {
+                    val fresh = requestApi.showUser(user.id)
+                    if (fresh.following != null) fresh else {
+                        val me = requestApi.verify()
+                        fresh.copy(following = requestApi.isFollowing(me.id, user.id))
+                    }
+                }.getOrElse { accepted.copy(following = null) }
+            },
+            { full ->
+                if (session.credentials() != requestSession) return@runIo
+                profileFollowInFlight.remove(user.id)
+                val confirmed = full.following == true
+                if (confirmed) pendingFollowIds.remove(user.id)
+                else if (user.protected) pendingFollowIds.add(user.id)
+                if (turn != generation || timelineProfile?.id != user.id) {
+                    timelineProfile?.takeIf { it.id == user.id && loadedProfileId == it.id }
+                        ?.let(::refreshProfileHeader)
+                    return@runIo
+                }
+                timelineProfile = full
+                if (confirmed) {
+                    showProfileContent(full)
+                    toast("已关注")
+                } else {
+                    refreshProfileHeader(full)
+                    AlertDialog.Builder(this)
+                        .setTitle(if (user.protected) "关注申请已发送" else "关注请求已提交")
+                        .setMessage(if (user.protected) "已发送关注申请，等待对方通过" else "暂未确认关注状态，请稍后刷新用户资料。")
+                        .setPositiveButton("知道了", null)
+                        .show()
+                }
+            },
+            { error ->
+                if (session.credentials() != requestSession) return@runIo
+                profileFollowInFlight.remove(user.id)
+                if (turn != generation || timelineProfile?.id != user.id) {
+                    timelineProfile?.takeIf { it.id == user.id && loadedProfileId == it.id }
+                        ?.let(::refreshProfileHeader)
+                    return@runIo
+                }
+                refreshProfileHeader(user)
+                toast("关注失败：" + safeMessage(error))
+            }
+        )
+    }
+
+    private fun refreshProfileHeader(user: FanfouUser) {
+        if (body.getChildAt(0)?.tag != "profile-header") return
+        body.removeViewAt(0)
+        body.addView(profileHeader(user), 0)
     }
 
     /** 详情页的正文和评论上下文。评论写入 `in_reply_to_*`，读取走上下文接口过滤。 */
@@ -1056,6 +1220,7 @@ class FanfouActivity : AppCompatActivity() {
             knownUsers = contextUsers,
             links = comment.links,
             emphasis = comment.emphasis,
+            mentions = comment.mentions,
             selectable = true
         ).apply {
             top(5)
@@ -1121,6 +1286,7 @@ class FanfouActivity : AppCompatActivity() {
             knownUsers = contextUsers,
             links = original.links,
             emphasis = original.emphasis,
+            mentions = original.mentions,
             selectable = true
         ).apply {
             top(9)
@@ -1156,6 +1322,7 @@ class FanfouActivity : AppCompatActivity() {
         knownUsers: List<FanfouUser> = emptyList(),
         links: List<FanfouTextLink> = emptyList(),
         emphasis: List<FanfouTextEmphasis> = emptyList(),
+        mentions: List<FanfouMention> = emptyList(),
         selectable: Boolean = false,
         onBodyClick: (() -> Unit)? = null,
         onBodyLongPress: (() -> Unit)? = null
@@ -1175,6 +1342,17 @@ class FanfouActivity : AppCompatActivity() {
             }, start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         }
         val urls = mutableListOf<IntRange>()
+        val mentionRanges = mutableListOf<IntRange>()
+        mentions.forEach { mention ->
+            if (mention.start >= 0 && mention.end <= text.length && mention.start < mention.end) {
+                mentionRanges += mention.start until mention.end
+                link(mention.start, mention.end) {
+                    val known = (knownUsers + listOfNotNull(currentUser)).firstOrNull { it.id == mention.userId }
+                    openUser(known ?: FanfouUser(mention.userId,
+                        text.substring(mention.start, mention.end).removePrefix("@"), "", false))
+                }
+            }
+        }
         fun openWeb(url: String) {
             startActivity(Intent(this@FanfouActivity, WebPageActivity::class.java)
                 .putExtra(WebPageActivity.EXTRA_URL, url))
@@ -1198,13 +1376,14 @@ class FanfouActivity : AppCompatActivity() {
             link(range.first, range.last + 1) { openWeb(url) }
         }
         Regex("@([\\p{L}\\p{N}_~-]+)").findAll(text).forEach { match ->
-            if (urls.any { it.first <= match.range.last && match.range.first <= it.last }) return@forEach
+            if ((urls + mentionRanges).any { it.first <= match.range.last && match.range.first <= it.last }) return@forEach
             val userId = match.groupValues[1]
             link(match.range.first, match.range.last + 1) {
                 val known = (knownUsers + listOfNotNull(currentUser)).firstOrNull {
                     it.id.equals(userId, ignoreCase = true) || it.name == userId
                 }
-                openUser(known ?: FanfouUser(userId, userId, "", false))
+                if (known != null) openUser(known)
+                else openUser(FanfouUser(userId, userId, "", false), guessedNickname = userId)
             }
         }
         this.text = richText
@@ -2441,9 +2620,28 @@ class FanfouActivity : AppCompatActivity() {
             setLineSpacing(dp(3).toFloat(), 1f)
         })
         addView(label(
-            if (user.protected) "受保护账号 · 仅显示你有权访问的内容" else "公开动态 · 按时间倒序",
+            if (loadedProfileId != user.id) "正在读取用户资料…"
+            else if (user.protected) "受保护账号 · 仅显示你有权访问的内容" else "公开动态 · 按时间倒序",
             13, muted
         ).apply { top(12) })
+        val relation = profileRelation(user)
+        if (relation != ProfileRelation.SELF) {
+            val inFlight = user.id in profileFollowInFlight
+            val metadataReady = loadedProfileId == user.id
+            addView(action(when {
+                !metadataReady -> "读取资料中…"
+                inFlight -> "正在提交…"
+                relation == ProfileRelation.FOLLOWING -> "已关注"
+                relation == ProfileRelation.PENDING -> "已申请"
+                relation == ProfileRelation.UNKNOWN -> "确认关注关系中…"
+                user.protected -> "申请关注"
+                else -> "关注"
+            }) { followProfile(user) }.apply {
+                top(16)
+                isEnabled = metadataReady && !inFlight && relation !in listOf(ProfileRelation.FOLLOWING, ProfileRelation.PENDING, ProfileRelation.UNKNOWN)
+                alpha = if (isEnabled) 1f else 0.6f
+            })
+        }
         addView(divider().apply { top(18) })
     }
 

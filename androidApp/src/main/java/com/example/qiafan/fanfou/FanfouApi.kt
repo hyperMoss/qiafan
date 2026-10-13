@@ -11,6 +11,7 @@ import android.util.Log
 import com.example.qiafan.BuildConfig
 import org.json.JSONArray
 import org.json.JSONObject
+import org.json.JSONTokener
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLDecoder
@@ -44,8 +45,11 @@ internal data class FanfouUser(
     val avatar: String,
     val protected: Boolean,
     val description: String = "",
-    val largeAvatar: String = avatar
+    val largeAvatar: String = avatar,
+    val following: Boolean? = null
 )
+
+internal data class FanfouMention(val start: Int, val end: Int, val userId: String)
 
 internal data class FanfouTextLink(val start: Int, val end: Int, val url: String)
 internal data class FanfouTextEmphasis(val start: Int, val end: Int)
@@ -63,7 +67,8 @@ internal data class FanfouStatus(
     val replyToUserId: String = "",
     val replyToScreenName: String = "",
     val links: List<FanfouTextLink> = emptyList(),
-    val emphasis: List<FanfouTextEmphasis> = emptyList()
+    val emphasis: List<FanfouTextEmphasis> = emptyList(),
+    val mentions: List<FanfouMention> = emptyList()
 )
 
 internal data class FanfouTrend(val name: String, val query: String)
@@ -87,7 +92,16 @@ internal data class FanfouConversation(
     val messageCount: Int
 )
 
-internal class FanfouApiException(val code: Int, message: String) : Exception(message)
+internal class FanfouApiException(val code: Int, message: String) : Exception(message) {
+    val pendingFollowRequest: Boolean
+        get() = code in listOf(400, 403) &&
+            Regex("^已向 .+ 发出关注请求，请等待确认[。.]?$").matches(message.orEmpty())
+}
+
+internal sealed interface FanfouFollowResult {
+    data class Accepted(val user: FanfouUser) : FanfouFollowResult
+    data object Pending : FanfouFollowResult
+}
 
 /**
  * OAuth 1.0a client for the documented Fanfou API. xAuth exchanges a password for a token once;
@@ -119,42 +133,55 @@ internal class FanfouApi(private val credentials: () -> FanfouCredentials) {
     fun showUser(userId: String): FanfouUser =
         userFrom(JSONObject(apiGet("/users/show.json", mapOf("id" to userId))))
 
+    fun isFollowing(fromUserId: String, toUserId: String): Boolean {
+        val response = JSONTokener(apiGet("/friendships/exists.json", mapOf(
+            "user_a" to fromUserId, "user_b" to toUserId
+        ))).nextValue()
+        return response as? Boolean ?: throw IllegalStateException("关注关系返回格式异常")
+    }
+
+    fun follow(userId: String): FanfouFollowResult = try {
+        FanfouFollowResult.Accepted(userFrom(JSONObject(apiPost("/friendships/create.json", mapOf("id" to userId)))))
+    } catch (error: FanfouApiException) {
+        if (error.pendingFollowRequest) FanfouFollowResult.Pending else throw error
+    }
+
     fun home(maxId: String? = null): List<FanfouStatus> =
-        statuses(apiGet("/statuses/home_timeline.json", page(maxId)))
+        statuses(statusGet("/statuses/home_timeline.json", page(maxId)))
 
     fun userTimeline(userId: String, maxId: String? = null): List<FanfouStatus> =
-        statuses(apiGet("/statuses/user_timeline.json", page(maxId) + ("id" to userId)))
+        statuses(statusGet("/statuses/user_timeline.json", page(maxId) + ("id" to userId)))
 
     fun publicTimeline(maxId: String? = null): List<FanfouStatus> =
-        statuses(apiGet("/statuses/public_timeline.json", page(maxId)))
+        statuses(statusGet("/statuses/public_timeline.json", page(maxId)))
 
     fun userPhotos(userId: String, pageNumber: Int = 1): List<FanfouStatus> =
-        statuses(apiGet("/photos/user_timeline.json", mapOf(
+        statuses(statusGet("/photos/user_timeline.json", mapOf(
             "id" to userId, "count" to "20", "page" to pageNumber.toString()
         )))
 
     fun mentions(maxId: String? = null): List<FanfouStatus> =
-        statuses(apiGet("/statuses/mentions.json", page(maxId)))
+        statuses(statusGet("/statuses/mentions.json", page(maxId)))
 
     fun favorites(pageNumber: Int = 1): List<FanfouStatus> =
-        statuses(apiGet("/favorites.json", mapOf("count" to "20", "page" to pageNumber.toString())))
+        statuses(statusGet("/favorites.json", mapOf("count" to "20", "page" to pageNumber.toString())))
 
     fun userFavorites(userId: String, pageNumber: Int = 1): List<FanfouStatus> =
-        statuses(apiGet("/favorites/" + encode(userId) + ".json", mapOf(
+        statuses(statusGet("/favorites/" + encode(userId) + ".json", mapOf(
             "count" to "20", "page" to pageNumber.toString()
         )))
 
     fun publicSearch(query: String, maxId: String? = null): List<FanfouStatus> =
-        statuses(apiGet("/search/public_timeline.json", page(maxId) + ("q" to query)), searchHighlights = true)
+        statuses(statusGet("/search/public_timeline.json", page(maxId) + ("q" to query)), searchHighlights = true)
 
     fun userSearch(userId: String, query: String, maxId: String? = null): List<FanfouStatus> =
-        statuses(apiGet("/search/user_timeline.json", page(maxId) + mapOf("id" to userId, "q" to query)), searchHighlights = true)
+        statuses(statusGet("/search/user_timeline.json", page(maxId) + mapOf("id" to userId, "q" to query)), searchHighlights = true)
 
     fun searchUsers(query: String): List<FanfouUser> =
         users(apiGet("/search/users.json", mapOf("q" to query, "count" to "20")))
 
     fun showStatus(id: String): FanfouStatus =
-        statusFrom(JSONObject(apiGet("/statuses/show.json", mapOf("id" to id))))
+        statusFrom(JSONObject(statusGet("/statuses/show.json", mapOf("id" to id))))
 
     fun counts(): FanfouCounts {
         val obj = JSONObject(apiGet("/account/notification.json"))
@@ -291,7 +318,7 @@ internal class FanfouApi(private val credentials: () -> FanfouCredentials) {
      * 返回的是服务端真实数据，过滤不到就是没有回复，不做任何补齐。
      */
     fun replies(statusId: String): List<FanfouStatus> =
-        statuses(apiGet("/statuses/context_timeline.json", mapOf("id" to statusId)))
+        statuses(statusGet("/statuses/context_timeline.json", mapOf("id" to statusId)))
             .filter { it.replyToStatusId == statusId }
 
     fun sendDirectMessage(userId: String, text: String) {
@@ -304,6 +331,9 @@ internal class FanfouApi(private val credentials: () -> FanfouCredentials) {
     private fun page(maxId: String?): Map<String, String> =
         if (maxId.isNullOrBlank()) mapOf("count" to "20")
         else mapOf("count" to "20", "max_id" to maxId)
+
+    private fun statusGet(path: String, params: Map<String, String> = emptyMap()): String =
+        apiGet(path, params + ("format" to "html"))
 
     private fun apiGet(path: String, params: Map<String, String> = emptyMap()): String =
         request("GET", apiBase + path, params, credentials())
@@ -429,14 +459,23 @@ internal class FanfouApi(private val credentials: () -> FanfouCredentials) {
         val fullText = decoded.toString()
         val text = fullText.trim()
         val leading = fullText.indexOf(text).coerceAtLeast(0)
+        val mentions = mutableListOf<FanfouMention>()
         val links = decoded.getSpans(0, decoded.length, URLSpan::class.java).mapNotNull { span ->
             val start = decoded.getSpanStart(span) - leading
             val end = decoded.getSpanEnd(span) - leading
-            val uri = Uri.parse(span.url)
-            if (start < 0 || end > text.length || start >= end ||
-                uri.scheme?.lowercase() !in listOf("http", "https") || uri.host.isNullOrBlank() ||
-                text.substring(start, end).startsWith("@")
-            ) null else FanfouTextLink(start, end, span.url)
+            if (start < 0 || end > text.length || start >= end) return@mapNotNull null
+            val normalized = if (span.url.startsWith("//")) "https:${span.url}" else span.url
+            val uri = Uri.parse(normalized)
+            if (uri.scheme?.lowercase() !in listOf("http", "https") || uri.host.isNullOrBlank())
+                return@mapNotNull null
+            val mentionStart = if (start > 0 && text[start - 1] == '@') start - 1 else start
+            val isMention = text[mentionStart] == '@'
+            val userId = uri.pathSegments.singleOrNull()?.takeIf { it.isNotBlank() }
+            if (isMention && uri.host.equals("fanfou.com", true) && uri.userInfo == null &&
+                uri.port == -1 && uri.query == null && uri.fragment == null && userId != null) {
+                mentions += FanfouMention(mentionStart, end, userId)
+                null
+            } else if (isMention) null else FanfouTextLink(start, end, normalized)
         }
         val emphasis = if (searchHighlights) decoded.getSpans(0, decoded.length, StyleSpan::class.java)
             .mapNotNull { span ->
@@ -460,7 +499,8 @@ internal class FanfouApi(private val credentials: () -> FanfouCredentials) {
             obj.optString("in_reply_to_user_id"),
             obj.optString("in_reply_to_screen_name"),
             links,
-            emphasis
+            emphasis,
+            mentions
         )
     }
 
@@ -472,7 +512,8 @@ internal class FanfouApi(private val credentials: () -> FanfouCredentials) {
         obj.optBoolean("protected"),
         plain(obj.optString("description")),
         checkedMediaUrl(obj.optString("profile_image_url_large"))
-            ?: checkedMediaUrl(obj.optString("profile_image_url")) ?: ""
+            ?: checkedMediaUrl(obj.optString("profile_image_url")) ?: "",
+        if (obj.has("following") && !obj.isNull("following")) obj.optBoolean("following") else null
     )
 
     companion object {
