@@ -78,6 +78,40 @@ python3 tests/release-script-test.py
 shellcheck release.sh
 ```
 
+## 联动官网准备脚本
+
+`release.sh` 可在 APK 发布成功、Assets 校验通过且该标签仍是最新 Release 后，顺序运行官网项目的 `deploy.sh`。脚本传入本次发布的 `VERSION`、`RELEASE_TAG` 和 `RELEASE_URL`，避免官网误用其他版本。
+
+配置一次本机官网目录，以后正常运行 `./release.sh 1.0.4` 就会自动联动：
+
+```sh
+printf '%s\n' /path/to/qiafan-site > .release-site-path
+```
+
+`.release-site-path` 仅保存本机路径，已加入 Git 忽略规则，不提交到仓库。也可用环境变量 `QIAFAN_SITE_DIR`，或单次指定目录：
+
+```sh
+./release.sh 1.0.4 --site-dir /path/to/qiafan-site
+./release.sh 1.0.4 --dry-run
+./release.sh 1.0.4 --resume --no-site
+```
+
+`--dry-run` 只显示联动计划，`--no-site` 跳过官网脚本。APK 发布或 Assets 检查失败时不运行官网脚本；官网脚本失败会返回非零状态，明确说明 APK 已发布，修复官网问题后用同版本 `--resume` 重试即可。已被新 Release 替代的旧标签会跳过官网同步，防止降级。
+
+当前 `qiafan-site/deploy.sh` 更新本机下载链接、版本文字、二维码，并执行 lint、类型检查和构建。它没有公开的 WorkBuddy 发布 CLI，因此脚本完成仅表示本机已准备，线上网站仍需通过 WorkBuddy 发布。
+
+## 官网直接读取最新版本
+
+如果希望发布 APK 后无需再次修改官网，可让官网运行时读取 GitHub 的公开 [最新 Release 接口](https://docs.github.com/en/rest/releases/releases#get-the-latest-release)。使用响应中的 `tag_name` 显示版本，并从 `assets` 选出已上传且非空的 `.apk`，读取其 `browser_download_url` 作为下载地址。校验文件则使用对应 `.apk.sha256` 附件。读取公开仓库不需要在前端放令牌。
+
+```sh
+gh api repos/hyperMoss/qiafan/releases/latest --jq '{version: .tag_name, apk: ([.assets[] | select(.name | endswith(".apk"))][0].browser_download_url)}'
+```
+
+[最新发布页](https://github.com/hyperMoss/qiafan/releases/latest) 可作请求失败时的后备入口。GitHub 也支持 `releases/latest/download/固定文件名` 的[最新附件链接](https://docs.github.com/en/repositories/releasing-projects-on-github/linking-to-releases)，但本项目目前附件名带版本，例如 `qiafan-v1.0.3.apk`，不能把其中的版本替换成 `latest` 或通配符直接下载。采用固定下载链接需要工作流另上传统一命名的附件。
+
+本轮接入官网准备脚本；官网当前仍使用构建时写入的版本和二维码，尚未改为运行时读取 API。
+
 标签仅接受 `vmajor.minor.patch`，暂不接受预发布后缀。CI 使用标签版本写入 APK 的 `versionName`；本地构建使用 `VERSION`。`versionCode = major × 1000000 + minor × 1000 + patch`，major 范围 0..2000，minor/patch 范围 0..999。每次更新须使用更大的版本号；已发布标签保持不变。
 
 正式包名是 `com.example.qiafan`，Debug 包名为 `com.example.qiafan.dev`。正式签名与 Debug 签名各自独立。
@@ -96,6 +130,7 @@ REQUIRE_RELEASE_SIGNING=true ./gradlew :androidApp:assembleRelease
 
 ## 验证记录
 
+- 2026-10-13：官网联动通过 ShellCheck 和 15 项脚本回归，新增验证准确版本传入、发布失败不调用官网、官网失败可继续、忽略的本机路径配置、跳过官网及旧版本不降级。本机 `--dry-run` 正确识别配置的官网目录；测试使用临时 Git 仓库及替身官网脚本，未运行真实官网构建或 WorkBuddy 线上发布。
 - 2026-10-13：`release.sh` 通过 ShellCheck 和 9 项本机回归，覆盖预演、非法版本、脏工作区、版本提交及准确标签推送、已有标签继续、本机标签补推、工作流失败、缺少 Assets、失败重跑和工作流未出现。测试使用临时 Git 仓库；未创建或推送真实新版本。
 - 2026-10-13：实际执行 `./release.sh 1.0.2 --resume`，只读检查已有远端标签，定位到提交 `728b00e` 的成功发布工作流 `38381984674`，并确认公开 Release 中 APK 与 SHA-256 Assets 均非空。未提交、推送或重跑该工作流；这项检查验证真实 GitHub 查询路径，新版本发布和失败重跑仍只有本机模拟验证。
 - 2026-10-13：[v1.0.2 发布工作流](https://github.com/hyperMoss/qiafan/actions/runs/38381984674) 全部通过。[Release Assets](https://github.com/hyperMoss/qiafan/releases/tag/v1.0.2) 包含 `qiafan-v1.0.2.apk`（3,387,071 字节）和 `.apk.sha256`。下载后的 APK 验签通过，包名为 `com.example.qiafan`，版本为 `1.0.2`，versionCode 为 `1000002`，未开启 Debug。SHA-256 与附件一致，为 `754bdd3bff57149c361f065cad6182ae0322d570f0c98f0fe05a49cf59bc31f7`。保留已有 `v1.0.1` 标签及附件，新版本包含正文选择、网页浏览、搜索加粗、侧栏与工具条位移修复。

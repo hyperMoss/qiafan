@@ -96,6 +96,8 @@ class FanfouActivity : AppCompatActivity() {
     private val favoriteInFlight = mutableSetOf<String>()
     private var generation = 0
     private var pendingSave: FanfouStatus? = null
+    private var statusImageDialog: StatusImageDialog? = null
+    private var contentImagePermission: ((Boolean) -> Unit)? = null
     private var notificationSnapshot: NotificationSnapshot? = null
     private var trendsSnapshot: List<FanfouTrend>? = null
     private var unreadCounts: FanfouCounts? = null
@@ -165,6 +167,7 @@ class FanfouActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        statusImageDialog?.dismiss()
         io.shutdownNow()
         super.onDestroy()
     }
@@ -198,6 +201,8 @@ class FanfouActivity : AppCompatActivity() {
     }
 
     private fun showLogin() {
+        statusImageDialog?.dismiss()
+        pendingSave = null
         generation++
         statusLoader = null
         currentUser = null
@@ -651,7 +656,7 @@ class FanfouActivity : AppCompatActivity() {
     }
 
     private fun statusCard(status: FanfouStatus, detail: Boolean = false): View {
-        favoriteState.putIfAbsent(status.id, status.favorited)
+        favoriteState.getOrPut(status.id) { status.favorited }
         val card = box().apply {
             setPadding(dp(18), dp(16), dp(18), 0)
             setBackgroundColor(Color.WHITE)
@@ -674,7 +679,7 @@ class FanfouActivity : AppCompatActivity() {
         identity.addView(label(relativeTime(status.createdAt), 11, muted).apply { top(2) })
         header.addView(identity, LinearLayout.LayoutParams(0, -2, 1f))
         header.setOnClickListener { openUser(status.user) }
-        if (!detail) header.addView(label("⋯", 24, muted).apply {
+        header.addView(label("⋯", 24, muted).apply {
             gravity = Gravity.CENTER
             contentDescription = "更多动态操作"
             isFocusable = true
@@ -786,6 +791,7 @@ class FanfouActivity : AppCompatActivity() {
         if (ownsStatus(status)) names += "删除这条动态"
         if (status.photo != null || status.originalPhoto != null) names += "查看原图"
         if (status.originalPhoto != null) names += "保存原图"
+        names += "生成图片"
         names += "复制正文"
         AlertDialog.Builder(this).setTitle("动态操作").setItems(names.toTypedArray()) { _, index ->
             when (names[index]) {
@@ -797,6 +803,7 @@ class FanfouActivity : AppCompatActivity() {
                 "删除这条动态" -> confirmDeleteStatus(status)
                 "查看原图" -> showPhoto(status)
                 "保存原图" -> saveOriginal(status)
+                "生成图片" -> showStatusImage(status)
                 "复制正文" -> {
                     (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
                         .setPrimaryClip(ClipData.newPlainText("动态正文", status.text))
@@ -2467,7 +2474,10 @@ class FanfouActivity : AppCompatActivity() {
         }.apply { top(8); horizontalGutter() })
         body.addView(action("清除图片缓存") {
             Glide.get(this).clearMemory()
-            io.execute { Glide.get(applicationContext).clearDiskCache() }
+            io.execute {
+                Glide.get(applicationContext).clearDiskCache()
+                StatusImageSharer(applicationContext).clearCache()
+            }
             toast("正在清除图片缓存")
         }.apply { top(10); horizontalGutter() })
         body.addView(sectionHeader("账号"))
@@ -2478,11 +2488,34 @@ class FanfouActivity : AppCompatActivity() {
                 .setPositiveButton("退出") { _, _ ->
                     session.logout()
                     Glide.get(this).clearMemory()
-                    io.execute { Glide.get(applicationContext).clearDiskCache() }
+                    io.execute {
+                        Glide.get(applicationContext).clearDiskCache()
+                        StatusImageSharer(applicationContext).clearCache()
+                    }
                     showLogin()
                 }
                 .show()
         }.apply { top(8); horizontalGutter() })
+    }
+
+    private fun showStatusImage(status: FanfouStatus) {
+        if (statusImageDialog != null) return
+        statusImageDialog = StatusImageDialog(
+            this, status,
+            loadReplies = { api.replies(status.id) },
+            requestSavePermission = { callback ->
+                if (Build.VERSION.SDK_INT < 29 &&
+                    checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED
+                ) {
+                    contentImagePermission = callback
+                    requestPermissions(arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE), 482)
+                } else callback(true)
+            },
+            onClosed = {
+                statusImageDialog = null
+                contentImagePermission = null
+            }
+        ).also { it.open() }
     }
 
     private fun saveOriginal(status: FanfouStatus) {
@@ -2508,6 +2541,12 @@ class FanfouActivity : AppCompatActivity() {
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 482) {
+            val callback = contentImagePermission
+            contentImagePermission = null
+            callback?.invoke(grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED)
+            return
+        }
         if (requestCode != 481) return
         val toSave = pendingSave
         pendingSave = null

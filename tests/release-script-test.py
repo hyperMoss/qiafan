@@ -29,7 +29,8 @@ elif args[:2] == ['run', 'view']:
     print((2 if state.exists() else 1) if field == 'attempt' else ('failure' if failed else 'success'))
 elif args[:2] == ['release', 'view']:
     field = args[args.index('--json') + 1]
-    print('https://github.com/test/qiafan/releases/tag/' + args[2] if field == 'url'
+    print(os.environ.get('GH_TEST_LATEST_TAG', 'v1.0.3') if field == 'tagName'
+          else 'https://github.com/test/qiafan/releases/tag/' + args[2] if field == 'url'
           else ('false' if os.environ.get('GH_TEST_MISSING_ASSET') == '1' else 'true'))
 else:
     sys.exit('Unexpected gh command: ' + repr(args))
@@ -50,6 +51,7 @@ class ReleaseScriptTest(unittest.TestCase):
         self.git("config", "user.email", "test@example.invalid")
         shutil.copy2(SCRIPT, self.work / "release.sh")
         (self.work / "VERSION").write_text("1.0.2\n")
+        (self.work / ".gitignore").write_text("/.release-site-path\n")
         workflow = self.work / ".github/workflows/android-release.yml"
         workflow.parent.mkdir(parents=True)
         workflow.write_text("name: Android Release\n")
@@ -64,6 +66,7 @@ class ReleaseScriptTest(unittest.TestCase):
             path.write_text(content)
             path.chmod(0o755)
         self.env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
+                        QIAFAN_SITE_DIR="",
                         GH_TEST_LOG=str(self.base / "gh.log"), GH_TEST_STATE=str(self.base / "rerun"),
                         GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
 
@@ -155,6 +158,63 @@ class ReleaseScriptTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn("发布完成", result.stdout)
         self.assertIn("90 秒", result.stderr)
+
+    def make_site(self):
+        site = self.base / "site with spaces"
+        site.mkdir()
+        (site / "deploy.sh").write_text('''#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$VERSION" "$RELEASE_TAG" "$RELEASE_URL" > "$(dirname "$0")/received.txt"
+[[ "${SITE_TEST_FAIL:-}" != "1" ]]
+''')
+        return site
+
+    def test_site_hook_receives_exact_release_after_success(self):
+        site = self.make_site()
+        result = self.run_script("1.0.3", "--site-dir", str(site))
+        self.assert_ok(result)
+        self.assertEqual((site / "received.txt").read_text().splitlines(),
+                         ["1.0.3", "v1.0.3", "https://github.com/test/qiafan/releases/tag/v1.0.3"])
+
+    def test_failed_release_never_runs_site_hook(self):
+        site = self.make_site()
+        for flags in ({"GH_TEST_FAIL": "1"}, {"GH_TEST_MISSING_ASSET": "1"}):
+            mode = ["--resume"] if self.remote_tags() else []
+            self.assertNotEqual(self.run_script("1.0.3", *mode, "--site-dir", str(site), **flags).returncode, 0)
+            self.assertIn("refs/tags/v1.0.3", self.remote_tags())
+            self.assertFalse((site / "received.txt").exists())
+
+    def test_site_failure_can_resume_without_moving_tag(self):
+        site = self.make_site()
+        result = self.run_script("1.0.3", "--site-dir", str(site), SITE_TEST_FAIL="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("APK 已发布，但官网脚本失败", result.stderr)
+        before = self.remote_tags()
+        self.assert_ok(self.run_script("1.0.3", "--resume", "--site-dir", str(site)))
+        self.assertEqual(self.remote_tags(), before)
+
+    def test_local_config_dry_run_and_skip_site(self):
+        site = self.make_site()
+        (self.work / ".release-site-path").write_text(str(site) + "\n")
+        result = self.run_script("1.0.3", "--dry-run")
+        self.assert_ok(result)
+        self.assertIn(str(site), result.stdout)
+        self.assertFalse((site / "received.txt").exists())
+        self.assert_ok(self.run_script("1.0.3", "--no-site"))
+        self.assertFalse((site / "received.txt").exists())
+        self.assert_ok(self.run_script("1.0.3", "--resume"))
+        self.assertEqual((site / "received.txt").read_text().splitlines()[0], "1.0.3")
+
+    def test_older_release_cannot_downgrade_site(self):
+        site = self.make_site()
+        result = self.run_script("1.0.3", "--site-dir", str(site), GH_TEST_LATEST_TAG="v1.0.4")
+        self.assert_ok(result)
+        self.assertIn("官网同步已跳过", result.stdout)
+        self.assertFalse((site / "received.txt").exists())
+
+    def test_invalid_site_path_stops_before_any_push(self):
+        self.assertNotEqual(self.run_script("1.0.3", "--site-dir", str(self.base / "missing")).returncode, 0)
+        self.assertEqual(self.remote_tags(), "")
 
 
 if __name__ == "__main__":

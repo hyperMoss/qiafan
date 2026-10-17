@@ -23,5 +23,14 @@
         </activity>
         <activity android:name=".fanfou.WebPageActivity" android:exported="false" />
         <activity android:name=".KuiklyRenderActivity" android:exported="false" />
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.content-images"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/content_image_paths" />
+        </provider>
     </application>
 </manifest>

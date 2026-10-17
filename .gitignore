@@ -47,3 +47,4 @@ open-design-diagnostics-*
 /signing/
 *.jks
 *.keystore
+/.release-site-path

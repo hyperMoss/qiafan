@@ -6,15 +6,18 @@ cd "$project_root"
 
 usage() {
     cat <<'USAGE'
-用法：./release.sh [版本号] [--dry-run | --resume | --retry]
+用法：./release.sh [版本号] [--dry-run | --resume | --retry] [--site-dir 目录 | --no-site]
 
   ./release.sh 1.0.3             更新 VERSION、提交版本、打标签并推送，等待发布
   ./release.sh 1.0.3 --dry-run   只显示计划，不提交、打标签或推送
   ./release.sh 1.0.3 --resume    继续已有标签的推送或发布检查
   ./release.sh 1.0.3 --retry     继续已有标签，重跑失败的发布工作流
+  ./release.sh 1.0.3 --site-dir /path/to/qiafan-site  发布成功后运行官网 deploy.sh
+  ./release.sh 1.0.3 --resume --no-site              只检查 APK，跳过官网脚本
 
 版本号可带 v 前缀；省略时读取 VERSION。新发布要求 master 分支且工作区干净。
 只自动提交 VERSION；功能代码请先自行提交。需要 git 和已登录的 GitHub CLI。
+官网目录可通过 QIAFAN_SITE_DIR 或本机 .release-site-path 配置；deploy.sh 仅准备网站上线。
 USAGE
 }
 
@@ -27,16 +30,25 @@ version_code() {
     printf '%s\n' "$((major * 1000000 + minor * 1000 + patch))"
 }
 
-version="" mode="new"
-for arg in "$@"; do
+version="" mode="new" site_dir="${QIAFAN_SITE_DIR:-}"
+if [[ -z "$site_dir" && -f .release-site-path ]]; then
+    IFS= read -r site_dir < .release-site-path || true
+fi
+while (( $# > 0 )); do
+    arg="$1"
     case "$arg" in
         -h|--help) usage; exit 0 ;;
         --dry-run|--resume|--retry)
             [[ "$mode" == "new" ]] || fail "只能选择一个运行模式"
             mode="${arg#--}" ;;
+        --site-dir)
+            (( $# >= 2 )) && [[ -n "$2" && "$2" != -* ]] || fail "--site-dir 需要官网目录"
+            site_dir="$2"; shift ;;
+        --no-site) site_dir="" ;;
         -*) fail "未知参数 $arg" ;;
         *) [[ -z "$version" ]] || fail "只能指定一个版本号"; version="${arg#v}" ;;
     esac
+    shift
 done
 [[ -n "$version" ]] || version="$(tr -d '\r\n' < VERSION)"
 code="$(version_code "$version")" || fail "版本须为 major.minor.patch，范围 0..2000 / 0..999 / 0..999，且大于 0.0.0"
@@ -46,12 +58,17 @@ git rev-parse --is-inside-work-tree >/dev/null
 git diff --check
 branch="$(git symbolic-ref --short -q HEAD)" || fail "请先切回 master 分支"
 dirty="$(git status --porcelain)"
+if [[ -n "$site_dir" ]]; then
+    [[ -f "$site_dir/deploy.sh" ]] || fail "官网目录不存在 deploy.sh，请检查 --site-dir 或 .release-site-path"
+    site_dir="$(cd "$site_dir" && pwd)"
+fi
 
 if [[ "$mode" == "dry-run" ]]; then
     printf '预演：版本 %s，标签 %s，versionCode %s，当前分支 %s\n' "$version" "$tag" "$code" "$branch"
     printf '计划：校验远端版本 → 提交 VERSION → 创建标签 → 原子推送 master 和标签 → 等待 Android Release → 检查 APK 和 SHA-256 Assets\n'
     [[ -z "$dirty" ]] || printf '实际发布前请提交或暂存到 stash 当前改动：\n%s\n' "$dirty"
     printf '实际发布时会检查 master 分支、GitHub 登录、远端分支和标签冲突。预演不访问远端。\n'
+    [[ -z "$site_dir" ]] || printf 'APK 发布成功且仍为最新版本后，运行 %s/deploy.sh，传入 VERSION=%s；不执行线上部署。\n' "$site_dir" "$version"
     exit 0
 fi
 
@@ -137,5 +154,19 @@ conclusion="$(gh run view "$run_id" --repo "$repo" --json conclusion --jq .concl
 
 assets_ok="$(gh release view "$tag" --repo "$repo" --json tagName,isDraft,assets --jq "(.tagName == \"$tag\") and (.isDraft == false) and ([.assets[] | select(.name == \"qiafan-$tag.apk\" and .size > 0)] | length > 0) and ([.assets[] | select(.name == \"qiafan-$tag.apk.sha256\" and .size > 0)] | length > 0)")"
 [[ "$assets_ok" == "true" ]] || fail "Release Assets 缺少非空 APK 或 SHA-256 文件，未确认发布完成"
-printf '\n发布完成：%s\n' "$(gh release view "$tag" --repo "$repo" --json url --jq .url)"
+release_url="$(gh release view "$tag" --repo "$repo" --json url --jq .url)"
+printf '\n发布完成：%s\n' "$release_url"
 printf 'Assets：qiafan-%s.apk、qiafan-%s.apk.sha256\n' "$tag" "$tag"
+
+if [[ -n "$site_dir" ]]; then
+    latest_tag="$(gh release view --repo "$repo" --json tagName --jq .tagName)"
+    if [[ "$latest_tag" != "$tag" ]]; then
+        printf '官网同步已跳过：最新 Release 是 %s，本次检查的是 %s，保留官网当前版本。\n' "$latest_tag" "$tag"
+        exit 0
+    fi
+    printf '\n准备官网 %s，版本 %s…\n' "$site_dir" "$version"
+    if ! VERSION="$version" RELEASE_TAG="$tag" RELEASE_URL="$release_url" bash "$site_dir/deploy.sh"; then
+        fail "APK 已发布，但官网脚本失败；修复后用 ./release.sh $version --resume 重试官网准备，不必重发标签"
+    fi
+    printf '官网脚本已完成。本机版本、二维码和构建已准备；WorkBuddy 线上发布仍需另行完成。\n'
+fi

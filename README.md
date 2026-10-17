@@ -6,6 +6,8 @@
 
 完成测试并提交功能代码后，在干净的 `master` 工作区运行 `./release.sh 1.0.3`，即可更新版本、打标签、推送并等待 GitHub Actions 发布。脚本确认对应 Release 的 Assets 中有非空 APK 和 SHA-256 校验文件后才报告完成。可用 `--dry-run` 预演、`--resume` 继续、`--retry` 重跑失败的工作流。版本、签名 Secrets 和完整步骤见 [Android 自动发布说明](docs/android-release.md)。正式签名配置完成前，工作流会停止发布。
 
+在本机 `.release-site-path` 配置官网目录后，APK 发布成功会自动调用官网 `deploy.sh`，传入本次版本并完成本机版本、二维码及构建准备；WorkBuddy 线上发布仍需另行完成。可用 `--no-site` 跳过。官网运行时读取 GitHub 最新 Release 的方案见发布说明。
+
 2026-10-08 已完成正式签名配置和云端发布：[v1.0.1 的 Assets](https://github.com/hyperMoss/qiafan/releases/tag/v1.0.1) 提供 APK 与校验文件。已下载验证 SHA-256、正式签名证书、包名和版本；云端 Debug/Release 编译均通过。
 
 ## 本机构建与运行
