@@ -24,6 +24,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
+import org.robolectric.shadows.ShadowDialog
 import java.io.File
 
 @RunWith(RobolectricTestRunner::class)
@@ -180,6 +181,9 @@ class StatusImageTest {
             dialog.open()
             await { ready(dialog) }
             assertTrue(preview(dialog).contentDescription.toString().contains("2 条评论"))
+            chooseStyle(dialog, StatusImageStyle.MIDNIGHT)
+            await { ready(dialog) }
+            val actualPreview = (preview(dialog).drawable as android.graphics.drawable.BitmapDrawable).bitmap
             val previewHeight = (preview(dialog).drawable as android.graphics.drawable.BitmapDrawable).bitmap.height
             action(dialog, "分享").performClick()
             var chooser: Intent? = null
@@ -198,6 +202,7 @@ class StatusImageTest {
             val image = activity.contentResolver.openInputStream(uri)!!.use { BitmapFactory.decodeStream(it) }
             assertEquals(900, image.width)
             assertEquals(previewHeight, image.height)
+            assertTrue(actualPreview.sameAs(image))
             assertFalse(permissionRequested)
             assertTrue(ready(dialog))
             assertTrue(action(dialog, "分享").isEnabled)
@@ -206,6 +211,59 @@ class StatusImageTest {
             StatusImageSharer(activity).clearCache()
             controller.pause().stop().destroy()
         }
+    }
+
+    @Test fun switchingStylesKeepsAllCommentsWithoutReloadingAndRemembersTheChoice() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val activity = controller.get()
+        var loads = 0
+        val replies = listOf(reply("one"), reply("two"))
+        val dialog = StatusImageDialog(activity, status, { loads++; replies }, { it(true) }, {})
+        try {
+            dialog.open()
+            await { ready(dialog) }
+            val initial = (preview(dialog).drawable as android.graphics.drawable.BitmapDrawable).bitmap
+            for (style in listOf(StatusImageStyle.MINIMAL, StatusImageStyle.MIDNIGHT, StatusImageStyle.PAPER, StatusImageStyle.MIDNIGHT)) {
+                chooseStyle(dialog, style)
+                await { ready(dialog) }
+                val image = (preview(dialog).drawable as android.graphics.drawable.BitmapDrawable).bitmap
+                assertEquals(style.background, image.getPixel(0, 0))
+                assertTrue(preview(dialog).contentDescription.toString().contains("2 条评论"))
+                assertEquals(initial.height, image.height)
+                assertEquals(1, loads)
+            }
+            dialog.dismiss()
+            val reopened = StatusImageDialog(activity, status, { replies }, { it(true) }, {})
+            try {
+                reopened.open()
+                await { ready(reopened) }
+                assertEquals(StatusImageStyle.MIDNIGHT.background,
+                    (preview(reopened).drawable as android.graphics.drawable.BitmapDrawable).bitmap.getPixel(0, 0))
+            } finally { reopened.dismiss() }
+        } finally {
+            dialog.dismiss()
+            controller.pause().stop().destroy()
+        }
+    }
+
+    @Test fun eachStyleUsesTheOriginalPhotoAndExportsEveryComment() {
+        val requested = mutableListOf<String>()
+        val photo = Bitmap.createBitmap(756, 420, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.RED) }
+        val images = StatusImageStyle.entries.map { style ->
+            val image = StatusImageRenderer.render(status.copy(photo = "small-preview", originalPhoto = "original-photo"),
+                listOf(reply("one"), reply("two")), style) { url, _ -> requested += url; photo }
+            assertEquals(900, image.width)
+            assertEquals(style.background, image.getPixel(0, 0))
+            val file = File("build/reports/share-styles/${style.name.lowercase()}.png")
+            file.parentFile?.mkdirs()
+            val sample = StatusImageRenderer.render(status, listOf(reply("one"), reply("two")), style) { _, _ -> null }
+            file.outputStream().use { sample.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            image
+        }
+        assertEquals(listOf("original-photo", "original-photo", "original-photo"), requested)
+        assertEquals(1, images.map { it.height }.distinct().size)
+        assertFalse(images[0].sameAs(images[1]))
+        assertFalse(images[1].sameAs(images[2]))
     }
 
     @Test fun renderPreviewArtifact() {
@@ -219,6 +277,26 @@ class StatusImageTest {
         file.parentFile?.mkdirs()
         file.outputStream().use { assertTrue(image.compress(Bitmap.CompressFormat.PNG, 100, it)) }
         assertTrue(file.length() > 0)
+    }
+
+    private fun chooseStyle(dialog: StatusImageDialog, style: StatusImageStyle) {
+        nodes(dialog.window!!.decorView).single {
+            it.contentDescription?.toString()?.startsWith("切换分享图片风格") == true
+        }.performClick()
+        shadowOf(Looper.getMainLooper()).idle()
+        val picker = ShadowDialog.getLatestDialog()
+        if (style == StatusImageStyle.MINIMAL) {
+            val decor = picker.window!!.decorView
+            decor.measure(View.MeasureSpec.makeMeasureSpec(420, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(520, View.MeasureSpec.EXACTLY))
+            decor.layout(0, 0, 420, 520)
+            val image = Bitmap.createBitmap(420, 520, Bitmap.Config.ARGB_8888)
+            decor.draw(Canvas(image))
+            val file = File("build/reports/share-styles/picker.png")
+            file.parentFile?.mkdirs()
+            file.outputStream().use { image.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        }
+        nodes(picker.window!!.decorView).single { it.contentDescription == "选择${style.title}风格" }.performClick()
     }
 
     private fun preview(dialog: StatusImageDialog) = nodes(dialog.window!!.decorView).filterIsInstance<ImageView>()

@@ -97,6 +97,7 @@ class FanfouActivity : AppCompatActivity() {
     private var generation = 0
     private var pendingSave: FanfouStatus? = null
     private var statusImageDialog: StatusImageDialog? = null
+    private var statusActionsSheet: StatusActionsSheet? = null
     private var contentImagePermission: ((Boolean) -> Unit)? = null
     private var notificationSnapshot: NotificationSnapshot? = null
     private var trendsSnapshot: List<FanfouTrend>? = null
@@ -167,6 +168,7 @@ class FanfouActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        statusActionsSheet?.dismiss()
         statusImageDialog?.dismiss()
         io.shutdownNow()
         super.onDestroy()
@@ -201,6 +203,7 @@ class FanfouActivity : AppCompatActivity() {
     }
 
     private fun showLogin() {
+        statusActionsSheet?.dismiss()
         statusImageDialog?.dismiss()
         pendingSave = null
         generation++
@@ -703,7 +706,8 @@ class FanfouActivity : AppCompatActivity() {
             top(10)
             setLineSpacing(dp(4).toFloat(), 1f)
         })
-        status.photo?.let { url ->
+        (status.originalPhoto ?: status.photo)?.let { url ->
+            val targetWidth = dp((minOf(720, resources.configuration.screenWidthDp) - 36).coerceAtLeast(1))
             val photoFrame = FrameLayout(this).apply {
                 background = rounded(subtle, 8)
                 clipToOutline = true
@@ -726,7 +730,7 @@ class FanfouActivity : AppCompatActivity() {
             card.addView(photoFrame, LinearLayout.LayoutParams(-1, dp(220)).apply {
                 topMargin = dp(10)
             })
-            Glide.with(this).load(url).listener(object : RequestListener<Drawable> {
+            Glide.with(this).load(url).fitCenter().override(targetWidth, dp(340)).listener(object : RequestListener<Drawable> {
                 override fun onLoadFailed(
                     e: GlideException?, model: Any?, target: Target<Drawable>, isFirstResource: Boolean
                 ): Boolean {
@@ -743,7 +747,7 @@ class FanfouActivity : AppCompatActivity() {
                 ): Boolean {
                     progress.visibility = View.GONE
                     state.visibility = View.GONE
-                    val availableWidth = dp((minOf(720, resources.configuration.screenWidthDp) - 36).coerceAtLeast(1))
+                    val availableWidth = targetWidth
                     val originalWidth = resource.intrinsicWidth.coerceAtLeast(1)
                     val originalHeight = resource.intrinsicHeight.coerceAtLeast(1)
                     val naturalHeight = (availableWidth.toDouble() * originalHeight / originalWidth).toInt()
@@ -787,30 +791,25 @@ class FanfouActivity : AppCompatActivity() {
     }
 
     private fun showStatusActions(status: FanfouStatus) {
-        val names = mutableListOf("查看详情", if (favoriteState[status.id] == true) "取消收藏" else "收藏", "转发", "一键快转", "写评论")
-        if (ownsStatus(status)) names += "删除这条动态"
-        if (status.photo != null || status.originalPhoto != null) names += "查看原图"
-        if (status.originalPhoto != null) names += "保存原图"
-        names += "生成图片"
-        names += "复制正文"
-        AlertDialog.Builder(this).setTitle("动态操作").setItems(names.toTypedArray()) { _, index ->
-            when (names[index]) {
-                "查看详情" -> openStatus(status)
-                "写评论" -> openStatus(status)
-                "收藏", "取消收藏" -> toggleFavorite(status, null)
-                "一键快转" -> repost(status, null)
-                "转发" -> showCompose(status)
-                "删除这条动态" -> confirmDeleteStatus(status)
-                "查看原图" -> showPhoto(status)
-                "保存原图" -> saveOriginal(status)
-                "生成图片" -> showStatusImage(status)
-                "复制正文" -> {
+        if (statusActionsSheet != null) return
+        statusActionsSheet = StatusActionsSheet(this, status, favoriteState[status.id] ?: status.favorited, ownsStatus(status),
+            onClosed = { statusActionsSheet = null }) { action ->
+            when (action) {
+                StatusQuickAction.REPLY -> openStatus(status)
+                StatusQuickAction.FAVORITE -> toggleFavorite(status, null)
+                StatusQuickAction.QUICK_REPOST -> repost(status, null)
+                StatusQuickAction.REPOST -> showCompose(status)
+                StatusQuickAction.DELETE -> confirmDeleteStatus(status)
+                StatusQuickAction.VIEW_PHOTO -> showPhoto(status)
+                StatusQuickAction.SAVE_PHOTO -> saveOriginal(status)
+                StatusQuickAction.CREATE_IMAGE -> showStatusImage(status)
+                StatusQuickAction.COPY -> {
                     (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
                         .setPrimaryClip(ClipData.newPlainText("动态正文", status.text))
                     toast("已复制正文")
                 }
             }
-        }.show()
+        }.also { it.open() }
     }
 
     /** 删除入口只对当前账号发布的列表动态开放，服务端仍是最终权限判定方。 */
@@ -1318,7 +1317,9 @@ class FanfouActivity : AppCompatActivity() {
             background = rounded(Color.WHITE, 8)
         }
         addView(image, FrameLayout.LayoutParams(-1, dp(heightDp)))
-        Glide.with(this@FanfouActivity).load(status.photo).into(image)
+        Glide.with(this@FanfouActivity).load(status.originalPhoto ?: status.photo).fitCenter()
+            .override(dp((resources.configuration.screenWidthDp - 36).coerceAtLeast(1)), dp(heightDp))
+            .into(image)
     }
 
     private fun mentionLabel(

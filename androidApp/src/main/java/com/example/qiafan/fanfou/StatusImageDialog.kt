@@ -2,6 +2,8 @@ package com.example.qiafan.fanfou
 
 import android.app.Activity
 import android.app.Dialog
+import android.app.AlertDialog
+import android.content.Context
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.graphics.Bitmap
@@ -39,12 +41,25 @@ internal class StatusImageDialog(
 ) : Dialog(activity, android.R.style.Theme_Material_Light_NoActionBar) {
     private val worker = Executors.newSingleThreadExecutor()
     private val main = Handler(Looper.getMainLooper())
-    private val toolbarColor = Color.rgb(116, 99, 82)
-    private val paperBackground = Color.rgb(235, 225, 202)
+    private val preferences = activity.getSharedPreferences("image_export", Context.MODE_PRIVATE)
+    private var selectedStyle = StatusImageStyle.entries.firstOrNull {
+        it.name == preferences.getString("style", null)
+    } ?: StatusImageStyle.PAPER
+    private val toolbarColor: Int get() = when (selectedStyle) {
+        StatusImageStyle.PAPER -> selectedStyle.accent
+        StatusImageStyle.MINIMAL -> selectedStyle.ink
+        StatusImageStyle.MIDNIGHT -> selectedStyle.paper
+    }
+    private val paperBackground: Int get() = selectedStyle.background
+    private var loadedReplies: List<FanfouStatus>? = null
+    private var stylePicker: AlertDialog? = null
     private var bitmap: Bitmap? = null
     private enum class ExportAction { SAVE, SHARE }
     private var exporting: ExportAction? = null
     private var closed = false
+    private lateinit var header: LinearLayout
+    private lateinit var stage: FrameLayout
+    private lateinit var styleButton: TextView
     private lateinit var preview: ImageView
     private lateinit var feedback: LinearLayout
     private lateinit var message: TextView
@@ -53,7 +68,7 @@ internal class StatusImageDialog(
     private lateinit var save: ImageButton
     private lateinit var share: ImageButton
 
-    private data class GeneratedImage(val bitmap: Bitmap, val commentCount: Int)
+    private data class GeneratedImage(val bitmap: Bitmap, val replies: List<FanfouStatus>)
 
     fun open() {
         requestWindowFeature(Window.FEATURE_NO_TITLE)
@@ -61,13 +76,22 @@ internal class StatusImageDialog(
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(paperBackground)
         }
-        val header = LinearLayout(activity).apply {
+        header = LinearLayout(activity).apply {
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(6), 0, dp(6), 0)
             setBackgroundColor(toolbarColor)
         }
         header.addView(icon(R.drawable.ic_content_image_back, "返回") { dismiss() })
-        header.addView(View(activity), LinearLayout.LayoutParams(0, 1, 1f))
+        styleButton = TextView(activity).apply {
+            text = selectedStyle.title + " ▾"
+            textSize = 15f
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            isFocusable = true
+            contentDescription = "切换分享图片风格，当前${selectedStyle.title}"
+            setOnClickListener { showStylePicker() }
+        }
+        header.addView(styleButton, LinearLayout.LayoutParams(0, dp(48), 1f))
         save = icon(R.drawable.ic_content_image_save, "保存到本地") {
             if (exporting == null && bitmap != null) {
                 exporting = ExportAction.SAVE
@@ -83,7 +107,7 @@ internal class StatusImageDialog(
         header.addView(share)
         column.addView(header, LinearLayout.LayoutParams(-1, dp(52)))
 
-        val stage = FrameLayout(activity)
+        stage = FrameLayout(activity).apply { setBackgroundColor(paperBackground) }
         preview = ImageView(activity).apply {
             adjustViewBounds = true
             scaleType = ImageView.ScaleType.FIT_CENTER
@@ -127,11 +151,14 @@ internal class StatusImageDialog(
         column.addView(stage, LinearLayout.LayoutParams(-1, 0, 1f))
         setContentView(column)
         setOnDismissListener {
+            stylePicker?.dismiss()
+            stylePicker = null
             closed = true
             worker.shutdownNow()
             main.removeCallbacksAndMessages(null)
             preview.setImageDrawable(null)
             bitmap = null
+            loadedReplies = null
             onClosed()
         }
         show()
@@ -141,24 +168,27 @@ internal class StatusImageDialog(
             addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS)
             statusBarColor = toolbarColor
             navigationBarColor = paperBackground
-            if (Build.VERSION.SDK_INT >= 26) decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+            if (Build.VERSION.SDK_INT >= 26) decorView.systemUiVisibility =
+                if (selectedStyle == StatusImageStyle.MIDNIGHT) 0 else View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
             setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT)
         }
         loadAndGenerate()
     }
 
-    private fun loadAndGenerate() {
+    private fun loadAndGenerate(reloadComments: Boolean = true) {
+        val cachedReplies = if (reloadComments) null else loadedReplies
+        val style = selectedStyle
         bitmap = null
         preview.setImageDrawable(null)
-        showState("正在读取评论并生成图片…", busy = true)
+        showState(if (cachedReplies == null) "正在读取评论并生成图片…" else "正在切换图片风格…", busy = true)
         updateEnabled()
         worker.execute {
             val targets = mutableListOf<FutureTarget<Bitmap>>()
             val result = runCatching {
-                val replies = runCatching(loadReplies).getOrElse { error ->
+                val replies = cachedReplies ?: runCatching(loadReplies).getOrElse { error ->
                     error("评论加载失败：${reason(error)}")
                 }.filter { it.replyToStatusId == status.id }.distinctBy { it.id }
-                val image = StatusImageRenderer.render(status, replies) { url, avatar ->
+                val image = StatusImageRenderer.render(status, replies, style) { url, avatar ->
                     val safeUrl = FanfouApi.secureMediaUrl(url)
                     if (safeUrl == null) {
                         if (!avatar) error("配图没有可用的 HTTPS 地址")
@@ -176,14 +206,15 @@ internal class StatusImageDialog(
                         }
                     }
                 }
-                GeneratedImage(image, replies.size)
+                GeneratedImage(image, replies)
             }
             targets.forEach { Glide.with(activity.applicationContext).clear(it) }
             post {
                 result.onSuccess { generated ->
                     bitmap = generated.bitmap
+                    loadedReplies = generated.replies
                     preview.setImageBitmap(generated.bitmap)
-                    preview.contentDescription = "内容图片预览，含 ${generated.commentCount} 条评论"
+                    preview.contentDescription = "内容图片预览，${style.title}风格，含 ${generated.replies.size} 条评论"
                     feedback.visibility = View.GONE
                 }.onFailure { error ->
                     showState("生成失败：${reason(error)}", retryable = true)
@@ -191,6 +222,66 @@ internal class StatusImageDialog(
                 updateEnabled()
             }
         }
+    }
+
+    private fun showStylePicker() {
+        if (bitmap == null || exporting != null || stylePicker != null) return
+        val list = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(10), dp(16), dp(4))
+        }
+        val picker = AlertDialog.Builder(activity).setTitle("分享图片风格")
+            .setView(list).setNegativeButton("取消", null).create()
+        stylePicker = picker
+        picker.setOnDismissListener { stylePicker = null }
+        StatusImageStyle.entries.forEach { style ->
+            val current = style == selectedStyle
+            val row = LinearLayout(activity).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(12), dp(12), dp(12), dp(12))
+                minimumHeight = dp(76)
+                background = GradientDrawable().apply {
+                    setColor(style.paper)
+                    cornerRadius = dp(12).toFloat()
+                    setStroke(dp(if (current) 2 else 1), if (current) Color.rgb(0, 119, 181) else Color.rgb(222, 226, 232))
+                }
+                isFocusable = true
+                contentDescription = "选择" + style.title + "风格"
+                setOnClickListener {
+                    picker.dismiss()
+                    if (style != selectedStyle) {
+                        selectedStyle = style
+                        preferences.edit().putString("style", style.name).apply()
+                        styleButton.text = style.title + " ▾"
+                        styleButton.contentDescription = "切换分享图片风格，当前${style.title}"
+                        header.setBackgroundColor(toolbarColor)
+                        stage.setBackgroundColor(paperBackground)
+                        window?.statusBarColor = toolbarColor
+                        window?.navigationBarColor = paperBackground
+                        if (Build.VERSION.SDK_INT >= 26) window?.decorView?.systemUiVisibility =
+                            if (style == StatusImageStyle.MIDNIGHT) 0 else View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+                        loadAndGenerate(reloadComments = false)
+                    }
+                }
+            }
+            row.addView(TextView(activity).apply {
+                text = "Aa"
+                textSize = 22f
+                setTextColor(style.accent)
+                typeface = android.graphics.Typeface.DEFAULT_BOLD
+                gravity = Gravity.CENTER
+                background = GradientDrawable().apply { setColor(style.background); cornerRadius = dp(8).toFloat() }
+            }, LinearLayout.LayoutParams(dp(48), dp(48)))
+            row.addView(LinearLayout(activity).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(12), 0, 0, 0)
+                addView(TextView(activity).apply { text = style.title; textSize = 16f; setTextColor(style.ink) })
+                addView(TextView(activity).apply { text = style.description; textSize = 12f; setTextColor(style.muted) })
+            }, LinearLayout.LayoutParams(0, -2, 1f))
+            if (current) row.addView(TextView(activity).apply { text = "✓"; textSize = 19f; setTextColor(style.accent) })
+            list.addView(row, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(10) })
+        }
+        picker.show()
     }
 
     private fun saveImage() {
@@ -239,6 +330,8 @@ internal class StatusImageDialog(
         val enabled = bitmap != null && exporting == null
         save.isEnabled = enabled
         share.isEnabled = enabled
+        styleButton.isEnabled = enabled
+        styleButton.alpha = if (enabled) 1f else 0.5f
         save.alpha = if (enabled) 1f else 0.4f
         share.alpha = if (enabled) 1f else 0.4f
     }

@@ -17,14 +17,15 @@ internal object StatusImageRenderer {
     const val WIDTH = 900
     private const val MAX_HEIGHT = 12000
     private const val GUTTER = 72f
-    private val ink = Color.rgb(31, 36, 42)
-    private val muted = Color.rgb(107, 113, 121)
 
     fun render(
         status: FanfouStatus,
         comments: List<FanfouStatus>,
+        style: StatusImageStyle = StatusImageStyle.PAPER,
         loadImage: (url: String, avatar: Boolean) -> Bitmap?
     ): Bitmap {
+        val ink = style.ink
+        val muted = style.muted
         val commands = mutableListOf<(Canvas) -> Unit>()
         var y = GUTTER
         fun checkHeight() {
@@ -56,15 +57,15 @@ internal object StatusImageRenderer {
             val top = y
             commands += { canvas ->
                 canvas.drawLine(GUTTER, top, WIDTH - GUTTER, top,
-                    Paint().apply { color = Color.rgb(229, 232, 235); strokeWidth = 2f })
+                    Paint().apply { color = style.divider; strokeWidth = 2f })
             }
             y += 32
         }
         fun entry(item: FanfouStatus, comment: Boolean) {
             val top = y
-            val avatar = item.user.avatar.takeIf { it.isNotBlank() }?.let { loadImage(it, true) }
+            val avatar = item.user.largeAvatar.ifBlank { item.user.avatar }.takeIf { it.isNotBlank() }?.let { loadImage(it, true) }
             commands += { canvas ->
-                val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(239, 244, 247) }
+                val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = style.divider }
                 canvas.drawCircle(GUTTER + 36, top + 36, 36f, paint)
                 if (avatar != null) {
                     canvas.save()
@@ -87,7 +88,7 @@ internal object StatusImageRenderer {
             y = maxOf(y, top + 72) + 28
             text(item.text.ifBlank { "（无文字）" }, if (comment) 30f else 36f, ink)
             y += 26
-            (item.photo ?: item.originalPhoto)?.let { url ->
+            (item.originalPhoto ?: item.photo)?.let { url ->
                 val bitmap = loadImage(url, false) ?: error("配图加载失败，请重试")
                 val available = WIDTH - GUTTER * 2
                 val height = minOf(1600f, available * bitmap.height / bitmap.width)
@@ -104,7 +105,7 @@ internal object StatusImageRenderer {
         entry(status, false)
         if (comments.isNotEmpty()) {
             divider()
-            text("评论 · ${comments.size}", 27f, muted, true)
+            text("评论 · ${comments.size}", 27f, style.accent, true)
             y += 32
             comments.forEach { comment ->
                 entry(comment, true)
@@ -115,15 +116,26 @@ internal object StatusImageRenderer {
         y += GUTTER
         val bitmap = Bitmap.createBitmap(WIDTH, y.toInt(), Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
-        drawPaperFrame(canvas)
+        drawPage(canvas, style)
         commands.forEach { it(canvas) }
         return bitmap
     }
 
-    private fun drawPaperFrame(canvas: Canvas) {
-        val paper = Color.rgb(255, 253, 247)
-        canvas.drawColor(Color.rgb(247, 244, 236))
+    private fun drawPage(canvas: Canvas, style: StatusImageStyle) {
+        val paper = style.paper
+        canvas.drawColor(style.background)
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = paper }
+        if (style == StatusImageStyle.MINIMAL) {
+            paint.color = style.accent
+            canvas.drawRect(72f, 28f, 148f, 34f, paint)
+            return
+        }
+        if (style == StatusImageStyle.MIDNIGHT) {
+            canvas.drawRoundRect(RectF(20f, 20f, WIDTH - 20f, canvas.height - 20f), 24f, 24f, paint)
+            paint.color = style.accent
+            canvas.drawRoundRect(RectF(72f, 38f, 148f, 43f), 2.5f, 2.5f, paint)
+            return
+        }
         canvas.drawRect(20f, 20f, WIDTH - 20f, canvas.height - 20f, paint)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 2f

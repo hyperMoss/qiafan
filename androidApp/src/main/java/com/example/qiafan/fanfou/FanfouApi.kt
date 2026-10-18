@@ -490,7 +490,7 @@ internal class FanfouApi(private val credentials: () -> FanfouCredentials) {
             obj.optString("created_at"),
             userFrom(obj.optJSONObject("user") ?: JSONObject()),
             obj.optBoolean("favorited"),
-            sequenceOf("imageurl", "thumburl", "largeurl")
+            sequenceOf("largeurl", "imageurl", "thumburl")
                 .mapNotNull { key -> checkedMediaUrl(photo?.optString(key)) }
                 .firstOrNull(),
             checkedMediaUrl(photo?.optString("largeurl")),
@@ -507,8 +507,8 @@ internal class FanfouApi(private val credentials: () -> FanfouCredentials) {
     private fun userFrom(obj: JSONObject): FanfouUser = FanfouUser(
         obj.optString("id"),
         obj.optString("screen_name").ifBlank { obj.optString("name") },
-        checkedMediaUrl(obj.optString("profile_image_url"))
-            ?: checkedMediaUrl(obj.optString("profile_image_url_large")) ?: "",
+        checkedMediaUrl(obj.optString("profile_image_url_large"))
+            ?: checkedMediaUrl(obj.optString("profile_image_url")) ?: "",
         obj.optBoolean("protected"),
         plain(obj.optString("description")),
         checkedMediaUrl(obj.optString("profile_image_url_large"))
