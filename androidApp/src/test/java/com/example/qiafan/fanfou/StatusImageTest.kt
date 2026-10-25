@@ -279,6 +279,42 @@ class StatusImageTest {
         assertTrue(file.length() > 0)
     }
 
+    @Test fun contentBlockOriginalIsLoadedOnceAndReusedWhenSwitchingStyles() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        var originals = 0
+        val shared = status.copy(text = "我的感想 转@朋友 引用中的原文", repostId = "source")
+        val source = status.copy(id = "source", text = "完整原文，在分享图片中保留。", user = user.copy(id = "source-author", name = "朋友"))
+        val replies = listOf(reply("one"), reply("two"))
+        val dialog = StatusImageDialog(controller.get(), shared, { replies }, { it(true) }, {},
+            loadOriginal = { id -> originals++; assertEquals(source.id, id); source })
+        try {
+            dialog.open()
+            await { ready(dialog) }
+            for (style in listOf(StatusImageStyle.MINIMAL, StatusImageStyle.MIDNIGHT)) {
+                chooseStyle(dialog, style)
+                await { ready(dialog) }
+                val actual = (preview(dialog).drawable as android.graphics.drawable.BitmapDrawable).bitmap
+                val expected = StatusImageRenderer.render(shared, replies, style, mapOf(source.id to source)) { _, _ -> null }
+                assertTrue(expected.sameAs(actual))
+                assertEquals(1, originals)
+                assertTrue(preview(dialog).contentDescription.toString().contains("2 条评论"))
+            }
+        } finally { dialog.dismiss(); controller.pause().stop().destroy() }
+    }
+
+    @Test fun inaccessibleOriginalFallsBackToEmbeddedContentWithoutBlockingExport() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val shared = status.copy(text = "转@朋友 原动态暂不可读，仍保留已有转发原文。", repostId = "source")
+        val dialog = StatusImageDialog(controller.get(), shared, { emptyList() }, { it(true) }, {},
+            loadOriginal = { throw FanfouApiException(403, "无权访问") })
+        try {
+            dialog.open()
+            await { ready(dialog) }
+            assertTrue(action(dialog, "分享").isEnabled)
+            assertTrue(action(dialog, "保存到本地").isEnabled)
+        } finally { dialog.dismiss(); controller.pause().stop().destroy() }
+    }
+
     private fun chooseStyle(dialog: StatusImageDialog, style: StatusImageStyle) {
         nodes(dialog.window!!.decorView).single {
             it.contentDescription?.toString()?.startsWith("切换分享图片风格") == true

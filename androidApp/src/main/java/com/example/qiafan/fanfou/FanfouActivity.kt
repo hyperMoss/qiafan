@@ -54,6 +54,7 @@ import com.bumptech.glide.Glide
 import com.bumptech.glide.load.engine.GlideException
 import com.bumptech.glide.request.RequestListener
 import com.bumptech.glide.request.target.Target
+import java.text.ParsePosition
 import java.text.SimpleDateFormat
 import java.util.ArrayDeque
 import java.util.Calendar
@@ -799,7 +800,7 @@ class FanfouActivity : AppCompatActivity() {
             setOnClickListener { showStatusActions(status) }
         }, LinearLayout.LayoutParams(dp(44), dp(44)))
         card.addView(header)
-        val content = statusBody(status)
+        val content = statusContent(status)
         if (content.text.isNotEmpty()) {
             card.addView(mentionLabel(
                 content.text, 16, ink,
@@ -1002,8 +1003,9 @@ class FanfouActivity : AppCompatActivity() {
         root.addView(overlay, FrameLayout.LayoutParams(-1, -1))
         val photo = ImageView(this).apply {
             scaleType = ImageView.ScaleType.FIT_CENTER
-            contentDescription = "${status.user.name}的图片"
+            contentDescription = "${status.user.name}的图片，点按关闭预览"
             setPadding(dp(8), dp(56), dp(8), dp(72))
+            setOnClickListener { root.removeView(overlay) }
         }
         overlay.addView(photo, FrameLayout.LayoutParams(-1, -1))
         Glide.with(this).load(url).into(photo)
@@ -1328,70 +1330,6 @@ class FanfouActivity : AppCompatActivity() {
         currentScroll?.post { currentScroll?.scrollTo(0, scrollY) }
     }
 
-    /** 卡片正文的展示拆解：回复剥掉 `@昵称 ` 前缀，转发剥掉 `转@昵称 ` 前缀，引用内容单独成卡。 */
-    private data class StatusBody(
-        val text: String,
-        val links: List<FanfouTextLink> = emptyList(),
-        val emphasis: List<FanfouTextEmphasis> = emptyList(),
-        val mentions: List<FanfouMention> = emptyList(),
-        val captionName: String? = null,
-        val quoteId: String? = null,
-        val embeddedQuote: String? = null
-    )
-
-    /**
-     * 转发按 `转@昵称 ` 拆出引用内容（原文本里就带着原文），拆不出时整体保留；
-     * 回复剥掉 `@昵称 ` 前缀并记下来源，富文本区间同步平移；普通动态原样展示。
-     */
-    private fun statusBody(status: FanfouStatus): StatusBody {
-        val text = status.text
-        if (status.repostId != null) {
-            val marker = text.indexOf("转@")
-            val prefix = if (marker >= 0) {
-                Regex("^转@(\\S+?)(?:\\s*[:：]\\s*|\\s+|\$)").find(text.substring(marker))
-            } else null
-            if (prefix != null) {
-                val cut = marker + prefix.range.last + 1
-                return StatusBody(
-                    text = if (marker > 0) text.substring(0, marker).trim() else "",
-                    quoteId = status.repostId,
-                    captionName = prefix.groupValues[1],
-                    embeddedQuote = text.substring(cut).trim().ifBlank { null }
-                )
-            }
-            return StatusBody(text = text.ifBlank { "（无文字）" }, quoteId = status.repostId)
-        }
-        if (status.replyToStatusId.isNotBlank()) {
-            val match = Regex("^@(\\S+)\\s+").find(text)
-            val cut = match?.range?.last?.plus(1) ?: 0
-            return StatusBody(
-                text = if (cut > 0) text.substring(cut).ifBlank { "（无文字）" } else text.ifBlank { "（无文字）" },
-                links = shiftLinks(status.links, cut),
-                emphasis = shiftEmphasis(status.emphasis, cut),
-                mentions = shiftMentions(status.mentions, cut),
-                captionName = match?.groupValues?.get(1)
-                    ?: status.replyToScreenName.ifBlank { status.replyToUserId }.ifBlank { null },
-                quoteId = status.replyToStatusId
-            )
-        }
-        return StatusBody(
-            text = text.ifBlank { "（无文字）" },
-            links = status.links,
-            emphasis = status.emphasis,
-            mentions = status.mentions
-        )
-    }
-
-    /** 剥掉前缀 [cut] 个字符后平移富文本区间；落在前缀里的区间直接丢弃。 */
-    private fun shiftLinks(ranges: List<FanfouTextLink>, cut: Int) =
-        ranges.mapNotNull { if (it.start >= cut) FanfouTextLink(it.start - cut, it.end - cut, it.url) else null }
-
-    private fun shiftEmphasis(ranges: List<FanfouTextEmphasis>, cut: Int) =
-        ranges.mapNotNull { if (it.start >= cut) FanfouTextEmphasis(it.start - cut, it.end - cut) else null }
-
-    private fun shiftMentions(ranges: List<FanfouMention>, cut: Int) =
-        ranges.mapNotNull { if (it.start >= cut) FanfouMention(it.start - cut, it.end - cut, it.userId) else null }
-
     /** 评论的引用原动态确实拿不到时，退回一行来源提示；点按仍可尝试打开原动态。 */
     private fun quoteSourceLine(name: String?, quoteId: String?): View = label(
         if (name != null) "来自 @$name" else "来自原动态", 12, muted
@@ -1418,7 +1356,9 @@ class FanfouActivity : AppCompatActivity() {
             setOnClickListener { openStatusById(target) }
         }
         addView(label(if (name != null) "转自 @$name" else "转发的动态", 11, muted, true))
-        addView(mentionLabel(text, 13, ink).apply {
+        addView(mentionLabel(text, 13, ink,
+            onBodyClick = target?.let { id -> { openStatusById(id) } }
+        ).apply {
             top(7)
             setLineSpacing(dp(2).toFloat(), 1f)
         })
@@ -1530,7 +1470,7 @@ class FanfouActivity : AppCompatActivity() {
         isClickable = original.id.isNotBlank()
         isFocusable = original.id.isNotBlank()
         contentDescription = "查看原动态"
-        if (original.id.isNotBlank()) setOnClickListener { openStatusById(original.id) }
+        if (original.id.isNotBlank()) setOnClickListener { openStatus(original) }
 
         val author = row().apply {
             gravity = Gravity.CENTER_VERTICAL
@@ -1557,7 +1497,7 @@ class FanfouActivity : AppCompatActivity() {
             links = original.links,
             emphasis = original.emphasis,
             mentions = original.mentions,
-            selectable = true
+            onBodyClick = original.id.takeIf { it.isNotBlank() }?.let { { openStatus(original) } }
         ).apply {
             top(8)
             setLineSpacing(dp(2).toFloat(), 1f)
@@ -1700,6 +1640,11 @@ class FanfouActivity : AppCompatActivity() {
 
     private fun openStatusById(id: String) {
         if (id.isBlank()) return
+        val cached = quoteContext[id] ?: items.firstOrNull { it.id == id }
+        if (cached != null) {
+            openStatus(cached)
+            return
+        }
         val turn = generation
         runIo(
             { api.showStatus(id) },
@@ -2369,8 +2314,18 @@ class FanfouActivity : AppCompatActivity() {
     }
 
     private fun parseFanfouTime(value: String): Long? = runCatching {
-        SimpleDateFormat("EEE MMM dd HH:mm:ss Z yyyy", Locale.US).parse(value)?.time
+        val text = value.trim()
+        val position = ParsePosition(0)
+        val format = SimpleDateFormat("EEE MMM dd HH:mm:ss Z yyyy", Locale.US).apply { isLenient = false }
+        format.parse(text, position)?.time?.takeIf { position.index == text.length }
     }.getOrNull()
+
+    private fun localDateTime(timestamp: Long): String {
+        val then = Calendar.getInstance().apply { timeInMillis = timestamp }
+        val sameYear = then.get(Calendar.YEAR) == Calendar.getInstance().get(Calendar.YEAR)
+        val pattern = if (sameYear) "M月d日 HH:mm" else "yyyy年M月d日 HH:mm"
+        return SimpleDateFormat(pattern, Locale.CHINA).format(timestamp)
+    }
 
     private fun fanfouNow(): String =
         SimpleDateFormat("EEE MMM dd HH:mm:ss Z yyyy", Locale.US).format(System.currentTimeMillis())
@@ -2393,12 +2348,12 @@ class FanfouActivity : AppCompatActivity() {
     }
 
     private fun chatClock(value: String): String {
-        val parsed = parseFanfouTime(value) ?: return value
+        val parsed = parseFanfouTime(value) ?: return "时间未知"
         val clock = SimpleDateFormat("HH:mm", Locale.getDefault()).format(parsed)
         return when (chatDay(value)) {
             "今天" -> clock
             "昨天" -> "昨天 $clock"
-            else -> SimpleDateFormat("M月d日 HH:mm", Locale.getDefault()).format(parsed)
+            else -> localDateTime(parsed)
         }
     }
 
@@ -2747,9 +2702,11 @@ class FanfouActivity : AppCompatActivity() {
 
     private fun showStatusImage(status: FanfouStatus) {
         if (statusImageDialog != null) return
+        val knownQuotes = quoteContext.toMap()
         statusImageDialog = StatusImageDialog(
             this, status,
             loadReplies = { api.replies(status.id) },
+            loadOriginal = { id -> knownQuotes[id] ?: api.showStatus(id) },
             requestSavePermission = { callback ->
                 if (Build.VERSION.SDK_INT < 29 &&
                     checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED
@@ -3150,16 +3107,14 @@ class FanfouActivity : AppCompatActivity() {
     }
 
     private fun relativeTime(value: String): String {
-        val parsed = runCatching {
-            SimpleDateFormat("EEE MMM dd HH:mm:ss Z yyyy", Locale.US).parse(value)?.time
-        }.getOrNull() ?: return value
+        val parsed = parseFanfouTime(value) ?: return "时间未知"
         val minutes = ((System.currentTimeMillis() - parsed) / 60_000).coerceAtLeast(0)
         return when {
             minutes < 1 -> "刚刚"
             minutes < 60 -> "${minutes} 分钟前"
             minutes < 1_440 -> "${minutes / 60} 小时前"
             minutes < 10_080 -> "${minutes / 1_440} 天前"
-            else -> value
+            else -> localDateTime(parsed)
         }
     }
 

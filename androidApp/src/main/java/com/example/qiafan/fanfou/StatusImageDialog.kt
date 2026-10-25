@@ -37,7 +37,8 @@ internal class StatusImageDialog(
     private val status: FanfouStatus,
     private val loadReplies: () -> List<FanfouStatus>,
     private val requestSavePermission: (callback: (Boolean) -> Unit) -> Unit,
-    private val onClosed: () -> Unit
+    private val onClosed: () -> Unit,
+    private val loadOriginal: ((String) -> FanfouStatus)? = null
 ) : Dialog(activity, android.R.style.Theme_Material_Light_NoActionBar) {
     private val worker = Executors.newSingleThreadExecutor()
     private val main = Handler(Looper.getMainLooper())
@@ -52,6 +53,7 @@ internal class StatusImageDialog(
     }
     private val paperBackground: Int get() = selectedStyle.background
     private var loadedReplies: List<FanfouStatus>? = null
+    private var loadedQuotes: Map<String, FanfouStatus> = emptyMap()
     private var stylePicker: AlertDialog? = null
     private var bitmap: Bitmap? = null
     private enum class ExportAction { SAVE, SHARE }
@@ -68,7 +70,7 @@ internal class StatusImageDialog(
     private lateinit var save: ImageButton
     private lateinit var share: ImageButton
 
-    private data class GeneratedImage(val bitmap: Bitmap, val replies: List<FanfouStatus>)
+    private data class GeneratedImage(val bitmap: Bitmap, val replies: List<FanfouStatus>, val quotes: Map<String, FanfouStatus>)
 
     fun open() {
         requestWindowFeature(Window.FEATURE_NO_TITLE)
@@ -159,6 +161,7 @@ internal class StatusImageDialog(
             preview.setImageDrawable(null)
             bitmap = null
             loadedReplies = null
+            loadedQuotes = emptyMap()
             onClosed()
         }
         show()
@@ -177,6 +180,7 @@ internal class StatusImageDialog(
 
     private fun loadAndGenerate(reloadComments: Boolean = true) {
         val cachedReplies = if (reloadComments) null else loadedReplies
+        val cachedQuotes = loadedQuotes
         val style = selectedStyle
         bitmap = null
         preview.setImageDrawable(null)
@@ -188,7 +192,21 @@ internal class StatusImageDialog(
                 val replies = cachedReplies ?: runCatching(loadReplies).getOrElse { error ->
                     error("评论加载失败：${reason(error)}")
                 }.filter { it.replyToStatusId == status.id }.distinctBy { it.id }
-                val image = StatusImageRenderer.render(status, replies, style) { url, avatar ->
+                val quotes = if (cachedReplies != null) cachedQuotes else {
+                    val originals = mutableMapOf(status.id to status)
+                    val ids = (listOf(status) + replies).mapNotNull { statusContent(it).quoteId }
+                        .filter { it.isNotBlank() && it != status.id }.distinct()
+                    for (id in ids) {
+                        try {
+                            loadOriginal?.invoke(id)?.takeIf { it.id == id }?.let { originals[id] = it }
+                        } catch (error: Exception) {
+                            if (Thread.currentThread().isInterrupted || error is InterruptedException) throw error
+                            // 原动态不可用时，使用转发中已有的原文或来源提示。
+                        }
+                    }
+                    originals
+                }
+                val image = StatusImageRenderer.render(status, replies, style, quotes) { url, avatar ->
                     val safeUrl = FanfouApi.secureMediaUrl(url)
                     if (safeUrl == null) {
                         if (!avatar) error("配图没有可用的 HTTPS 地址")
@@ -206,13 +224,14 @@ internal class StatusImageDialog(
                         }
                     }
                 }
-                GeneratedImage(image, replies)
+                GeneratedImage(image, replies, quotes)
             }
             targets.forEach { Glide.with(activity.applicationContext).clear(it) }
             post {
                 result.onSuccess { generated ->
                     bitmap = generated.bitmap
                     loadedReplies = generated.replies
+                    loadedQuotes = generated.quotes
                     preview.setImageBitmap(generated.bitmap)
                     preview.contentDescription = "内容图片预览，${style.title}风格，含 ${generated.replies.size} 条评论"
                     feedback.visibility = View.GONE

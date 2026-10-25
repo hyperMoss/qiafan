@@ -20,5 +20,12 @@ internal enum class StatusImageStyle(
         Color.rgb(109, 117, 128), Color.rgb(0, 119, 181), Color.rgb(230, 234, 239)),
     MIDNIGHT("深色", "深蓝卡片 · 清透文字",
         Color.rgb(16, 24, 36), Color.rgb(27, 38, 54), Color.rgb(235, 241, 248),
-        Color.rgb(169, 185, 204), Color.rgb(128, 206, 238), Color.rgb(55, 71, 91))
+        Color.rgb(169, 185, 204), Color.rgb(128, 206, 238), Color.rgb(55, 71, 91));
+
+    val contentBlock: Int get() = when (this) {
+        PAPER -> Color.rgb(246, 243, 235)
+        MINIMAL -> Color.rgb(245, 247, 250)
+        MIDNIGHT -> Color.rgb(20, 30, 46)
+    }
+
 }
