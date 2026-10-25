@@ -67,7 +67,7 @@
 - 通知：按提及、私信和关注请求分栏显示。未读数来自通知计数接口，列表各自从对应接口加载。私信页只展示已取得的收件箱内容，并可尝试发送文本私信；不把它冒充完整的服务端会话历史。
 - 发布与评论：关注页右下角可发布最多 140 字的纯文本动态。动态详情页底部可写评论：客户端自动在正文前添加 `@原作者昵称 `（缺少昵称时使用账号 ID），回复关系仍用真实 ID 提交 `in_reply_to_status_id`、`in_reply_to_user_id`；这段前缀计入 140 字上限。评论与快转分别使用回复参数和 `repost_status_id`，不会把评论误发成快转。发送失败会恢复原文并显示原因。评论列表通过动态上下文接口读取当前账号可见的真实回复；每条评论会带上原动态的作者、时间、完整正文和图片，点按可打开原动态，正文中的 `@用户` 可进入对应主页。无法读取时显示服务端错误，不补造内容。图片发布尚未接入。
 - 原图：可从单条动态卡片或图片查看器保存该张原图到系统“图片/恰饭”；批量保存入口已移除。
-- 正文提及与转发：列表和详情正文中的 `@用户` 统一高亮。“更多”/长按菜单和详情操作栏提供独立的“转发”入口，参考 xifan 打开预填 `转@原作者昵称 原动态正文` 的编辑页，光标在开头，可添加自己的话；发送时提交 `repost_status_id`。一键快转保留。超过 140 字时完整保留草稿，用户调整后才能发送，不自动截断原文；发送失败保留编辑内容并恢复操作。
+- 正文提及与转发：列表和详情正文中的 `@用户` 统一高亮。“更多”/长按菜单和详情操作栏提供独立的“转发”入口，参考 xifan 打开预填 `转@原作者昵称 原动态正文` 的编辑页，光标在开头，可添加自己的话；发送时提交 `repost_status_id`。一键快转保留。超过 140 字时完整保留草稿，用户调整后才能发送，不自动截断原文；发送失败保留编辑内容并恢复操作。转发链按 `转@昵称` 分段展示，保留每一层评论与分隔线；接口的转发 ID 指向最初原文时，只在引用区域把该原文还原成引用卡，不覆盖中间评论。引用卡已经带出的同一张原图不会在卡片下方重复展示。
 - 正文选择与网页：详情、评论及原动态正文支持系统文本选择和复制，列表保留长按操作菜单。网页链接高亮，点击使用 Android 系统 WebView；右上角“浏览器”可打开当前地址。内置网页保持 HTTPS 传输，HTTP 链接尝试升级 HTTPS，网站不支持时显示真实错误，不绕过证书检查；外部浏览器保留原始 HTTP 地址。搜索关键词显示加粗，安全解析搜索接口的 `strong` 和 `em` 标记。
 - 进入详情直接显示已加载正文，后台更新时不显示加载动画。通知和热门读取时保留小进度图标，隐藏读取提示文字。
 
@@ -75,6 +75,7 @@
 
 ### 编译与安装
 
+- 2026-10-26：转发链展示改动在本机 `:androidApp:assembleDebug`、`:androidApp:assembleRelease` 和 `:androidApp:testDebugUnitTest`（71 项用例，0 失败）全部通过，既有弃用及 D8 Kotlin 元数据警告仍在。Debug `1.0.10-dev`（versionCode 1000010）安装到 `23127PN0CC` 后启动无崩溃，真实关注流中的多层转发按 `转自 @昵称` 加分隔线逐层显示；同一改动的分享图在三种样式下生成于 `androidApp/build/reports/content-block-shares/chain-*.png`，原图只绘制一次。随后手机无线调试断开，未再补做详情页与点击路径的设备复核。
 - 2026-10-13：受保护主页修复后，`:androidApp:assembleDebug :androidApp:assembleDebugAndroidTest --offline --no-daemon` 通过，设备检查通过 13 项。最终 `installDebug` 的模拟器属性查询超时，改用 `adb install -r` 成功覆盖安装主应用和测试 APK；既有弃用及 D8 警告仍在。
 - 2026-10-13：`:androidApp:installDebug --offline --no-daemon` 编译并覆盖安装到 MuMu Android 12。`:androidApp:assembleDebugAndroidTest` 通过，原生解析测试通过六项用例，覆盖转义搜索高亮、网址连续性、链接偏移和非搜索正文边界。构建仍有既有的弃用及 D8 Kotlin 元数据警告。
 - 解析回归可在安装 Debug 主应用和 `androidApp/build/outputs/apk/androidTest/debug/androidApp-debug-androidTest.apk` 后运行 `adb shell am instrument -w com.example.qiafan.dev.test/com.example.qiafan.fanfou.FanfouTextInstrumentation`。成功输出为 `Text and follow response checks passed 13 cases.`。覆盖搜索高亮、规范提及链接及申请待确认响应的边界；普通 403、401 和 500 不会被当作申请成功。运行会重启测试进程，不清除登录数据。

@@ -145,7 +145,9 @@ internal object StatusImageRenderer {
                 text(formatted.text, if (comment) 30f else 36f, style.ink, left = left, right = right)
                 y += 24
             }
-            val original = formatted.quoteId?.let { id -> quotes[id] }?.takeIf { it.id != item.id }
+            val candidate = formatted.quoteId?.let { id -> quotes[id] }?.takeIf { it.id != item.id }
+            val original = quotedStatus(formatted, candidate)
+            val embeddedOriginal = embeddedQuotedStatus(formatted, candidate)
             val embeddedPhoto = original == null && formatted.embeddedQuote != null && item.repostId != null
             if (formatted.quoteId != null && !replyingToSharedStatus) {
                 block(left, right) {
@@ -163,14 +165,21 @@ internal object StatusImageRenderer {
                             caption != null -> "来自 @$caption"
                             else -> "原动态暂不可用"
                         }
-                        text(source, 22f, style.accent, true, innerLeft, innerRight)
-                        formatted.embeddedQuote?.let {
-                            y += 16
-                            text(it, 28f, style.ink, left = innerLeft, right = innerRight)
-                        }
+                        val embedded = formatted.embeddedQuote
+                        if (embedded == null) text(source, 22f, style.accent, true, innerLeft, innerRight)
+                        else repostQuoteParts(caption, embedded).let { parts -> parts.forEachIndexed { index, part ->
+                            if (index > 0) y += 22
+                            if (index == parts.lastIndex && embeddedOriginal != null) identity(embeddedOriginal, innerLeft, innerRight, 48f)
+                            else text(part.author?.let { "转自 @$it" } ?: "转发的动态", 22f, style.accent, true, innerLeft, innerRight)
+                            if (part.text.isNotBlank()) {
+                                y += 16
+                                text(if (index == parts.lastIndex && embeddedOriginal != null) embeddedOriginal.text else part.text,
+                                    28f, style.ink, left = innerLeft, right = innerRight)
+                            }
+                        } }
                         if (embeddedPhoto) {
                             y += 20
-                            photo(item, innerLeft, innerRight)
+                            photo(embeddedOriginal?.takeIf { it.originalPhoto != null || it.photo != null } ?: item, innerLeft, innerRight)
                         }
                     }
                 }

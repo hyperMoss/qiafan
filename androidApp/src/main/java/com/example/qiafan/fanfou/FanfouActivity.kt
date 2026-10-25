@@ -849,19 +849,23 @@ class FanfouActivity : AppCompatActivity() {
         // 评论与转发统一：正文 + 引用卡（转发的引用来自内嵌原文或补拉，评论的引用补拉原动态）。
         // 引用确实拿不到时，评论退回一行"来自 @昵称"的来源提示。
         var quoted: FanfouStatus? = null
+        var quotedPhoto: String? = null
         if (content.quoteId != null) {
             val quoteId = content.quoteId
-            quoted = quoteContext[quoteId] ?: items.firstOrNull { it.id == quoteId }
+            val candidate = quoteContext[quoteId] ?: items.firstOrNull { it.id == quoteId }
+            quoted = quotedStatus(content, candidate)
+            val embeddedOriginal = embeddedQuotedStatus(content, candidate)
+            (quoted ?: embeddedOriginal)?.let { quotedPhoto = it.originalPhoto ?: it.photo }
             val embedded = content.embeddedQuote
             val quoteUnavailable = !quoteFetchAllowed(detail) || quoteId in quoteFailed
             if (quoted == null && embedded != null) {
-                card.addView(embeddedQuoteBox(content.captionName, embedded, quoteId),
+                card.addView(embeddedQuoteBox(content.captionName, embedded, quoteId, embeddedOriginal),
                     LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
             } else if (quoted == null && status.repostId == null && quoteUnavailable) {
                 card.addView(quoteSourceLine(content.captionName, quoteId),
                     LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
             }
-            if (quoted == null && quoteFetchAllowed(detail)) requestQuoteContext(quoteId)
+            if (candidate == null && quoteFetchAllowed(detail)) requestQuoteContext(quoteId)
         }
         quoted?.let { original ->
             card.addView(originalStatusCard(original, listOf(status.user, original.user)),
@@ -869,7 +873,7 @@ class FanfouActivity : AppCompatActivity() {
         }
         (status.originalPhoto ?: status.photo)?.let { url ->
             // 引用卡已带同一张原图时不再重复展示。
-            val covered = quoted?.let { (it.originalPhoto ?: it.photo) == url } == true
+            val covered = quotedPhoto == url
             if (covered) return@let
             val targetWidth = dp((minOf(720, resources.configuration.screenWidthDp) - 36).coerceAtLeast(1))
             val photoFrame = FrameLayout(this).apply {
@@ -1371,23 +1375,38 @@ class FanfouActivity : AppCompatActivity() {
     }
 
     /** 原动态暂不可达（已删、受保护或还没拉到）时，引用内容先用转发文本里带的原文。 */
-    private fun embeddedQuoteBox(name: String?, text: String, quoteId: String?): View = box().apply {
+    private fun embeddedQuoteBox(name: String?, text: String, quoteId: String?, original: FanfouStatus? = null): View = box().apply {
         setPadding(dp(12), dp(10), dp(12), dp(12))
         background = rounded(subtle, 8)
-        val target = quoteId?.takeIf { it.isNotBlank() }
-        isClickable = target != null
-        isFocusable = target != null
-        if (target != null) {
-            contentDescription = "查看被转发的原动态"
-            setOnClickListener { openStatusById(target) }
+        val parts = repostQuoteParts(name, text)
+        parts.forEachIndexed { index, part ->
+            if (index > 0) addView(divider().apply { top(10) })
+            if (index == parts.lastIndex && original != null) {
+                addView(originalStatusCard(original, listOf(original.user)).apply { top(10) })
+                return@forEachIndexed
+            }
+            val target = when {
+                parts.size == 1 -> quoteId?.takeIf { it.isNotBlank() }
+                else -> null
+            }
+            val section = box().apply {
+                if (index > 0) top(10)
+                if (target != null) {
+                    contentDescription = "查看被转发的原动态"
+                    isClickable = true
+                    isFocusable = true
+                    setOnClickListener { openStatusById(target) }
+                }
+                addView(label(part.author?.let { "转自 @$it" } ?: "转发的动态", 11, muted, true))
+                if (part.text.isNotBlank()) addView(mentionLabel(part.text, 13, ink,
+                    onBodyClick = target?.let { id -> { openStatusById(id) } }
+                ).apply {
+                    top(7)
+                    setLineSpacing(dp(2).toFloat(), 1f)
+                })
+            }
+            addView(section)
         }
-        addView(label(if (name != null) "转自 @$name" else "转发的动态", 11, muted, true))
-        addView(mentionLabel(text, 13, ink,
-            onBodyClick = target?.let { id -> { openStatusById(id) } }
-        ).apply {
-            top(7)
-            setLineSpacing(dp(2).toFloat(), 1f)
-        })
     }
 
     /** 只在关注流、通知提及和详情页补拉引用原动态；搜索、随便看看等保持零额外请求。 */

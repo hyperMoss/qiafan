@@ -56,8 +56,8 @@ class ContentInteractionTest {
     }
 
     @Test fun tappingEmbeddedQuoteTextAlsoOpensTheCorrespondingOriginal() = withActivity { a ->
-        val quote = FanfouActivity::class.java.getDeclaredMethod("embeddedQuoteBox", String::class.java, String::class.java, String::class.java)
-            .apply { isAccessible = true }.invoke(a, user.name, original.text, original.id) as View
+        val quote = FanfouActivity::class.java.getDeclaredMethod("embeddedQuoteBox", String::class.java, String::class.java, String::class.java, FanfouStatus::class.java)
+            .apply { isAccessible = true }.invoke(a, user.name, original.text, original.id, null) as View
         cache(a)
         tapText(quote, original.text)
         assertEquals("转发内嵌原文也必须响应点击", original.id, target(a)?.id)

@@ -80,4 +80,22 @@ class StatusImageContentBlockTest {
         assertEquals(author.name, body.captionName)
         assertEquals(4, body.links.single().start)
     }
+
+    @Test fun repostChainsExportEveryIntermediateCommentAndTheOriginalPhoto() {
+        val photo = Bitmap.createBitmap(400, 200, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.RED) }
+        val root = original.copy(user = original.user.copy(name = "原作者"), photo = "root-photo", originalPhoto = "root-photo")
+        val chain = repost.copy(text = "我的评论 转@饭友 上一人的评论 转@原作者 ${root.text}", photo = null, originalPhoto = null)
+        for (style in StatusImageStyle.entries) {
+            val requested = mutableListOf<String>()
+            val image = StatusImageRenderer.render(chain, emptyList(), style, mapOf(root.id to root)) { url, avatar ->
+                if (avatar) null else { requested += url; photo }
+            }
+            assertEquals("原图应在引用区域内保留且只绘制一次", listOf("root-photo"), requested)
+            val output = File("build/reports/content-block-shares/chain-${style.name.lowercase()}.png")
+            output.parentFile?.mkdirs()
+            output.outputStream().use { image.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            image.recycle()
+        }
+        photo.recycle()
+    }
 }

@@ -90,6 +90,23 @@ class FeedFormatTest {
         assertFalse(shown.any { it.startsWith("来自") })
     }
 
+    @Test fun repostChainKeepsIntermediateCommentWhenApiPointsToOriginal() = withActivity { a ->
+        val original = FanfouStatus("root", "人生第一课：接受亲人的离世。", "", author.copy(id = "stone", name = "石小笨"), false, null, null, null)
+        FanfouActivity::class.java.getDeclaredField("quoteContext").apply { isAccessible = true }
+            .set(a, mutableMapOf(original.id to original))
+        val status = original.copy(id = "head", user = author.copy(id = "head-user", name = "头村"),
+            text = "行长真乃饭否人设第一人 转@奔驰的回忆 这个世界上没有人爱我 转@保安老劉 唔，这三课很早就上齐了 转@石小笨 人生第一课：接受亲人的离世。", repostId = original.id)
+        for (detail in listOf(false, true)) {
+            val shown = texts(card(a, status, detail))
+            assertTrue("中间转发者的评论不能被最初原文覆盖", shown.contains("这个世界上没有人爱我"))
+            assertTrue(shown.any { it.contains("奔驰的回忆") })
+            assertTrue(shown.contains("唔，这三课很早就上齐了"))
+            assertTrue(shown.any { it.contains(original.text) })
+            assertTrue(shown.contains("行长真乃饭否人设第一人"))
+            assertTrue(shown.indexOf("这个世界上没有人爱我") < shown.indexOf("唔，这三课很早就上齐了"))
+        }
+    }
+
     private class FixedCache(private var payload: String?) : NotificationResponseCache {
         var written: String? = null
         override fun readNotification(path: String, owner: FanfouCredentials) = payload
