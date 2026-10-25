@@ -14,7 +14,7 @@ import javax.crypto.spec.GCMParameterSpec
 
 internal data class HistoryEntry(val kind: String, val id: String, val title: String)
 
-internal class SecureSession(context: Context) {
+internal class SecureSession(context: Context) : NotificationResponseCache {
     private val prefs = context.getSharedPreferences("fanfou_session", Context.MODE_PRIVATE)
     private val settings = context.getSharedPreferences("fanfou_settings", Context.MODE_PRIVATE)
     private val alias = "qiafan_fanfou_session"
@@ -39,10 +39,12 @@ internal class SecureSession(context: Context) {
         }.getOrNull()
     }
 
+    @Synchronized
     fun save(account: FanfouCredentials) {
         require(account.consumerKey == NofanApplication.consumerKey &&
             account.consumerSecret == NofanApplication.consumerSecret &&
             account.token.isNotBlank() && account.tokenSecret.isNotBlank())
+        if (credentials() != account) clearNotificationCache()
         val obj = JSONObject()
             .put("token", account.token)
             .put("tokenSecret", account.tokenSecret)
@@ -92,10 +94,37 @@ internal class SecureSession(context: Context) {
         settings.edit().remove("recent_searches").apply()
     }
 
+    @Synchronized
     fun logout() {
         prefs.edit().clear().apply()
         clearHistory()
         clearRecentSearches()
+    }
+
+    @Synchronized
+    override fun readNotification(path: String, owner: FanfouCredentials): String? {
+        if (credentials() != owner) return null
+        return runCatching {
+            val encrypted = prefs.getString("notification:$path", null) ?: return null
+            val cached = JSONObject(decrypt(encrypted))
+            val age = System.currentTimeMillis() - cached.getLong("savedAt")
+            if (age !in 0..86_400_000L) return null
+            cached.getString("payload")
+        }.getOrNull()
+    }
+
+    @Synchronized
+    override fun writeNotification(path: String, payload: String, owner: FanfouCredentials) {
+        if (credentials() != owner) return
+        val value = JSONObject().put("savedAt", System.currentTimeMillis()).put("payload", payload)
+        prefs.edit().putString("notification:$path", encrypt(value.toString())).apply()
+    }
+
+    @Synchronized
+    fun clearNotificationCache() {
+        val edit = prefs.edit()
+        prefs.all.keys.filter { it.startsWith("notification:") }.forEach { edit.remove(it) }
+        edit.apply()
     }
 
     private fun key(): SecretKey {

@@ -71,8 +71,6 @@ internal data class FanfouStatus(
     val mentions: List<FanfouMention> = emptyList()
 )
 
-internal data class FanfouTrend(val name: String, val query: String)
-
 internal data class FanfouCounts(val mentions: Int, val messages: Int, val requests: Int)
 
 internal data class FanfouMessage(
@@ -108,7 +106,10 @@ internal sealed interface FanfouFollowResult {
  * the password is not stored. Requests use HTTPS, while the OAuth signature uses the HTTP URL
  * as in nofan's compatibility hook. Redirects are rejected.
  */
-internal class FanfouApi(private val credentials: () -> FanfouCredentials) {
+internal class FanfouApi(
+    private val notificationCache: NotificationResponseCache? = null,
+    private val credentials: () -> FanfouCredentials
+) {
     private val apiBase = "https://api.fanfou.com"
     private val authBase = "https://fanfou.com"
 
@@ -161,7 +162,8 @@ internal class FanfouApi(private val credentials: () -> FanfouCredentials) {
         )))
 
     fun mentions(maxId: String? = null): List<FanfouStatus> =
-        statuses(statusGet("/statuses/mentions.json", page(maxId)))
+        if (maxId == null) notificationGet("/statuses/mentions.json", page(null) + ("format" to "html")) { statuses(it) }
+        else statuses(statusGet("/statuses/mentions.json", page(maxId)))
 
     fun favorites(pageNumber: Int = 1): List<FanfouStatus> =
         statuses(statusGet("/favorites.json", mapOf("count" to "20", "page" to pageNumber.toString())))
@@ -183,24 +185,59 @@ internal class FanfouApi(private val credentials: () -> FanfouCredentials) {
     fun showStatus(id: String): FanfouStatus =
         statusFrom(JSONObject(statusGet("/statuses/show.json", mapOf("id" to id))))
 
-    fun counts(): FanfouCounts {
-        val obj = JSONObject(apiGet("/account/notification.json"))
-        return FanfouCounts(
-            obj.optInt("mentions"),
-            obj.optInt("direct_messages"),
-            obj.optInt("friend_requests")
+    fun counts(): FanfouCounts = notificationGet("/account/notification.json", parse = ::countsFrom)
+
+    private fun countsFrom(payload: String): FanfouCounts {
+        val obj = JSONObject(payload)
+        return FanfouCounts(obj.optInt("mentions"), obj.optInt("direct_messages"), obj.optInt("friend_requests"))
+    }
+
+    fun cachedNotifications(): NotificationSnapshot {
+        val owner = credentials()
+        fun <T> read(path: String, parse: (String) -> T): Result<T>? =
+            notificationCache?.readNotification(path, owner)?.let { runCatching { parse(it) }.getOrNull() }
+                ?.let { Result.success(it) }
+        return NotificationSnapshot(
+            counts = read("/account/notification.json", ::countsFrom)?.getOrNull() ?: FanfouCounts(0, 0, 0),
+            mentions = read("/statuses/mentions.json") { statuses(it) },
+            conversations = read("/direct_messages/conversation_list.json", ::conversationsFrom),
+            requests = read("/friendships/requests.json", ::users)
         )
     }
+
+    private fun <T> notificationGet(
+        path: String,
+        params: Map<String, String> = emptyMap(),
+        parse: (String) -> T
+    ): T {
+        val owner = credentials()
+        val payload = request("GET", apiBase + path, params, owner)
+        val parsed = parse(payload)
+        runCatching { notificationCache?.writeNotification(path, payload, owner) }
+        return parsed
+    }
+
+    fun followingUsers(userId: String, pageNumber: Int = 1): List<FanfouUser> =
+        users(apiGet("/users/friends.json", mapOf("id" to userId, "count" to "20", "page" to pageNumber.toString())))
+
+    fun followers(userId: String, pageNumber: Int = 1): List<FanfouUser> =
+        users(apiGet("/users/followers.json", mapOf("id" to userId, "count" to "20", "page" to pageNumber.toString())))
+
+    fun viewedTimeline(userId: String, maxId: String? = null): List<FanfouStatus> =
+        statuses(statusGet("/statuses/home_timeline.json", page(maxId) + ("id" to userId)))
 
     /**
      * 通知页「私信」标签按会话成列。路径与字段以文档声明为准（new_conv 只表示有无未读），
      * 线上可用性与返回字段仍需授权账号实测。
      */
-    fun conversations(page: Int = 1): List<FanfouConversation> {
-        val array = JSONArray(apiGet(
-            "/direct_messages/conversation_list.json",
-            mapOf("count" to "20", "page" to page.toString())
-        ))
+    fun conversations(page: Int = 1): List<FanfouConversation> =
+        if (page == 1) notificationGet("/direct_messages/conversation_list.json",
+            mapOf("count" to "20", "page" to "1"), ::conversationsFrom)
+        else conversationsFrom(apiGet("/direct_messages/conversation_list.json",
+            mapOf("count" to "20", "page" to page.toString())))
+
+    private fun conversationsFrom(payload: String): List<FanfouConversation> {
+        val array = JSONArray(payload)
         return (0 until array.length()).mapNotNull { index ->
             val entry = array.optJSONObject(index) ?: return@mapNotNull null
             val dm = entry.optJSONObject("dm") ?: return@mapNotNull null
@@ -240,21 +277,13 @@ internal class FanfouApi(private val credentials: () -> FanfouCredentials) {
     }
 
     fun followRequests(): List<FanfouUser> =
-        users(apiGet("/friendships/requests.json"))
+        notificationGet("/friendships/requests.json", parse = ::users)
 
     /** 接受或拒绝一条关注请求；路径与参数以 Fanfou 文档声明为准，需用授权账号实测。 */
     fun respondToFollowRequest(userId: String, accept: Boolean) {
         require(userId.isNotBlank()) { "关注请求缺少用户 ID" }
         val path = if (accept) "/friendships/accept.json" else "/friendships/deny.json"
         apiPost(path, mapOf("id" to userId))
-    }
-
-    fun trends(): List<FanfouTrend> {
-        val array = JSONObject(apiGet("/trends/list.json")).optJSONArray("trends") ?: JSONArray()
-        return (0 until array.length()).mapNotNull { index ->
-            val obj = array.optJSONObject(index) ?: return@mapNotNull null
-            FanfouTrend(obj.optString("name"), obj.optString("query"))
-        }
     }
 
     fun setFavorite(id: String, favorite: Boolean): FanfouStatus {

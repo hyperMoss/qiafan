@@ -49,6 +49,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import com.example.qiafan.BuildConfig
 import com.bumptech.glide.Glide
 import com.bumptech.glide.load.engine.GlideException
 import com.bumptech.glide.request.RequestListener
@@ -87,7 +88,9 @@ class FanfouActivity : AppCompatActivity() {
     private var lastFollowTabTapAt = 0L
     private var busy = false
     private var showingTabs = false
-    private var exploreSection = "热门话题"
+    private var exploreItems: List<FanfouStatus> = emptyList()
+    private var exploreNextId: String? = null
+    private var exploreScrollY = 0
     private var currentUser: FanfouUser? = null
     private var currentUserLoading = false
     private var navAvatarFrame: FrameLayout? = null
@@ -100,7 +103,11 @@ class FanfouActivity : AppCompatActivity() {
     private var statusActionsSheet: StatusActionsSheet? = null
     private var contentImagePermission: ((Boolean) -> Unit)? = null
     private var notificationSnapshot: NotificationSnapshot? = null
-    private var trendsSnapshot: List<FanfouTrend>? = null
+    private var notificationsInFlight = 0
+    private var notificationsRefreshedAt = 0L
+    private var notificationCacheLoaded = false
+    private var notificationError: String? = null
+    private var notificationScrollY = 0
     private var unreadCounts: FanfouCounts? = null
     private var notificationSection = "提及"
     private var notificationBadge: TextView? = null
@@ -133,13 +140,6 @@ class FanfouActivity : AppCompatActivity() {
     private val backStack = ArrayDeque<() -> Unit>()
     private var restoringPage = false
 
-    private data class NotificationSnapshot(
-        val counts: FanfouCounts,
-        val mentions: Result<List<FanfouStatus>>,
-        val conversations: Result<List<FanfouConversation>>,
-        val requests: Result<List<FanfouUser>>
-    )
-
     /** 会话页里的一条消息。状态在本地推进，key 用于发送中/失败后重发同一行。 */
     private class ChatLine(
         val key: String,
@@ -161,7 +161,7 @@ class FanfouActivity : AppCompatActivity() {
                 View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
         }
         session = SecureSession(this)
-        api = FanfouApi { session.credentials() ?: error("请先授权饭否账号") }
+        api = FanfouApi(session) { session.credentials() ?: error("请先授权饭否账号") }
         root = FrameLayout(this).apply { setBackgroundColor(Color.WHITE) }
         setContentView(root)
         if (session.credentials()?.token?.isNotBlank() == true) showTab("关注") else showLogin()
@@ -195,6 +195,12 @@ class FanfouActivity : AppCompatActivity() {
     }
 
     private fun rememberHomeState() {
+        if (showingTabs && activeTab == "通知") notificationScrollY = currentScroll?.scrollY ?: 0
+        if (showingTabs && activeTab == "随便看看" && statusLoader != null) {
+            exploreItems = items.toList()
+            exploreNextId = nextId
+            exploreScrollY = currentScroll?.scrollY ?: 0
+        }
         if (showingTabs && activeTab == "关注" && statusLoader != null) {
             homeItems = items.toList()
             homeNextId = nextId
@@ -216,7 +222,14 @@ class FanfouActivity : AppCompatActivity() {
         backStack.clear()
         unreadCounts = null
         notificationSnapshot = null
-        trendsSnapshot = null
+        notificationsInFlight = 0
+        notificationsRefreshedAt = 0L
+        notificationCacheLoaded = false
+        notificationError = null
+        notificationScrollY = 0
+        exploreItems = emptyList()
+        exploreNextId = null
+        exploreScrollY = 0
         homeItems = emptyList()
         homeNextId = null
         homeScrollY = 0
@@ -302,7 +315,7 @@ class FanfouActivity : AppCompatActivity() {
     }
 
     private fun showTab(tab: String) {
-        if (tab == "热门" && !session.showHot) return
+        if (tab == "随便看看" && !session.showHot) return
         rememberHomeState()
         backStack.clear()
         currentPage = { showTab(tab) }
@@ -310,9 +323,9 @@ class FanfouActivity : AppCompatActivity() {
         when (tab) {
             "关注" -> showTimeline("关注", true) { api.home(it) }
             "通知" -> showNotifications()
-            "热门" -> showTrends()
+            "随便看看" -> showExplore()
         }
-        if (tab != "通知") refreshUnreadCounts()
+        if (tab != "通知") refreshNotifications()
         ensureCurrentUser()
     }
 
@@ -457,8 +470,8 @@ class FanfouActivity : AppCompatActivity() {
                 MotionEvent.ACTION_UP -> if (touchStart > 0 && event.rawY - touchStart > dp(100)) {
                     when {
                         statusLoader != null -> loadStatuses(true)
-                        tabs && activeTab == "通知" -> showNotifications()
-                        tabs && activeTab == "热门" -> showTrends()
+                        tabs && activeTab == "通知" -> refreshNotifications(force = true)
+                        tabs && activeTab == "随便看看" -> showExplore()
                     }
                 }
             }
@@ -478,7 +491,7 @@ class FanfouActivity : AppCompatActivity() {
             shellHost.addView(navWrap, FrameLayout.LayoutParams(-1, dp(65), Gravity.BOTTOM))
             navWrap.addView(divider(), FrameLayout.LayoutParams(-1, dp(1), Gravity.TOP))
             navWrap.addView(nav, FrameLayout.LayoutParams(contentWidth, dp(64), Gravity.CENTER))
-            listOf("关注", "通知", "热门").filter { it != "热门" || session.showHot }.forEach { name ->
+            listOf("关注", "通知", "随便看看").filter { it != "随便看看" || session.showHot }.forEach { name ->
                 val selected = name == activeTab
                 val item = box().apply {
                     gravity = Gravity.CENTER
@@ -565,15 +578,17 @@ class FanfouActivity : AppCompatActivity() {
         items.clear()
         nextId = null
         val restoreHome = tabs && title == "关注" && homeItems.isNotEmpty()
-        if (restoreHome) {
-            items.addAll(homeItems)
-            nextId = homeNextId
+        val restoreExplore = tabs && title == "随便看看" && exploreItems.isNotEmpty()
+        if (restoreHome || restoreExplore) {
+            items.addAll(if (restoreHome) homeItems else exploreItems)
+            nextId = if (restoreHome) homeNextId else exploreNextId
         }
         busy = false
         shell(title, tabs)
-        if (restoreHome) {
+        if (restoreHome || restoreExplore) {
             renderStatuses(nextId != null)
-            currentScroll?.post { currentScroll?.scrollTo(0, homeScrollY) }
+            val savedY = if (restoreHome) homeScrollY else exploreScrollY
+            currentScroll?.post { currentScroll?.scrollTo(0, savedY) }
         } else loadStatuses(true)
     }
 
@@ -586,7 +601,7 @@ class FanfouActivity : AppCompatActivity() {
             if (items.isEmpty()) {
                 body.removeAllViews()
                 timelineProfile?.let { body.addView(profileHeader(it)) }
-                if (showingTabs && activeTab == "热门" && exploreSection == "随便看看") {
+                if (showingTabs && activeTab == "随便看看") {
                     addExploreHeader()
                 }
                 body.addView(loadingPlaceholders())
@@ -614,6 +629,10 @@ class FanfouActivity : AppCompatActivity() {
                     homeItems = items.toList()
                     homeNextId = nextId
                 }
+                if (showingTabs && activeTab == "随便看看") {
+                    exploreItems = items.toList()
+                    exploreNextId = nextId
+                }
                 renderStatuses(nextId != null)
             },
             { error ->
@@ -634,7 +653,7 @@ class FanfouActivity : AppCompatActivity() {
                     if (items.isEmpty()) {
                         body.removeAllViews()
                         timelineProfile?.let { body.addView(profileHeader(it)) }
-                        if (showingTabs && activeTab == "热门" && exploreSection == "随便看看") addExploreHeader()
+                        if (showingTabs && activeTab == "随便看看") addExploreHeader()
                         body.addView(emptyState("暂时无法读取动态", safeMessage(error)))
                     }
                     body.addView(errorRow("加载失败：" + safeMessage(error)) { loadStatuses(reset) })
@@ -648,7 +667,7 @@ class FanfouActivity : AppCompatActivity() {
         val previousY = scroll?.scrollY ?: 0
         body.removeAllViews()
         timelineProfile?.let { body.addView(profileHeader(it)) }
-        if (showingTabs && activeTab == "热门" && exploreSection == "随便看看") addExploreHeader()
+        if (showingTabs && activeTab == "随便看看") addExploreHeader()
         if (items.isEmpty()) body.addView(emptyState("这里还没有动态", "下拉刷新，稍后再来看看。"))
         items.forEach { body.addView(statusCard(it)) }
         if (hasMore) body.addView(label("继续下滑，加载更多", 12, muted).apply {
@@ -958,7 +977,6 @@ class FanfouActivity : AppCompatActivity() {
         shell(user.name.ifBlank { "@" + user.id }, false)
         body.addView(profileHeader(user))
         body.addView(loadingPlaceholders())
-        showFloatingLoading("正在读取用户资料…")
         val turn = generation
         runIo(
             {
@@ -1618,39 +1636,75 @@ class FanfouActivity : AppCompatActivity() {
         statusLoader = null
         timelineProfile = null
         items.clear()
+        busy = false
         shell("通知", true)
-        notificationSnapshot?.let { renderNotifications(it) } ?: body.addView(loadingPlaceholders())
-        showFloatingLoading("正在读取通知…", showMessage = false)
-        val turn = generation
-        runIo(
-            {
-                val counts = api.counts()
-                val mentions = runCatching { api.mentions() }
-                val conversations = runCatching { api.conversations() }
-                val requests = runCatching { api.followRequests() }
-                NotificationSnapshot(counts, mentions, conversations, requests)
-            },
-            { snapshot ->
-                if (turn != generation) return@runIo
-                hideFloatingLoading()
-                notificationSnapshot = snapshot
-                unreadCounts = snapshot.counts
-                updateUnreadBadge()
-                renderNotifications(snapshot)
-            },
-            { error ->
-                if (turn != generation) return@runIo
-                hideFloatingLoading()
-                if (notificationSnapshot == null) {
-                    body.removeAllViews()
-                    body.addView(emptyState("通知加载失败", safeMessage(error)))
-                }
-                body.addView(errorRow("请检查网络后重试") { showNotifications() })
+        renderNotifications(notificationSnapshot ?: NotificationSnapshot(counts = unreadCounts ?: FanfouCounts(0, 0, 0)))
+        currentScroll?.post { currentScroll?.scrollTo(0, notificationScrollY) }
+        refreshNotifications()
+    }
+
+    private fun refreshNotifications(force: Boolean = false) {
+        if (notificationsInFlight > 0) return
+        if (!force && notificationCacheLoaded && SystemClock.elapsedRealtime() - notificationsRefreshedAt < 60_000L) return
+        val owner = session.credentials() ?: return
+        val requestApi = FanfouApi(session) { owner }
+        notificationsInFlight = 1
+        fun stillSignedIn() = session.credentials() == owner
+        fun redraw() {
+            if (showingTabs && activeTab == "通知") renderNotifications(notificationSnapshot ?: NotificationSnapshot())
+        }
+        fun fetch() {
+            notificationsInFlight = 4
+            notificationError = null
+            fun finished() {
+                notificationsInFlight--
+                if (notificationsInFlight == 0) notificationsRefreshedAt = SystemClock.elapsedRealtime()
             }
-        )
+            fun <T> request(work: () -> T, merge: (NotificationSnapshot, Result<T>) -> NotificationSnapshot) {
+                runIo({ runCatching(work) }, { result ->
+                    if (!stillSignedIn()) return@runIo
+                    finished()
+                    notificationSnapshot = merge(notificationSnapshot ?: NotificationSnapshot(), result)
+                    if (result.isFailure) notificationError = "部分通知更新失败，已保留上次内容。下拉可重试。"
+                    redraw()
+                })
+            }
+            request({ requestApi.counts() }) { old, result ->
+                result.getOrNull()?.let {
+                    unreadCounts = it
+                    updateUnreadBadge()
+                    old.copy(counts = it)
+                } ?: old
+            }
+            request({ requestApi.mentions() }) { old, result ->
+                old.copy(mentions = result.takeIf { it.isSuccess } ?: old.mentions ?: result)
+            }
+            request({ requestApi.conversations() }) { old, result ->
+                old.copy(conversations = result.takeIf { it.isSuccess } ?: old.conversations ?: result)
+            }
+            request({ requestApi.followRequests() }) { old, result ->
+                old.copy(requests = result.takeIf { it.isSuccess } ?: old.requests ?: result)
+            }
+        }
+        if (!notificationCacheLoaded) {
+            runIo({ requestApi.cachedNotifications() }, { cached ->
+                if (!stillSignedIn()) return@runIo
+                notificationCacheLoaded = true
+                notificationSnapshot = cached
+                unreadCounts = cached.counts
+                updateUnreadBadge()
+                redraw()
+                fetch()
+            }, {
+                if (!stillSignedIn()) return@runIo
+                notificationCacheLoaded = true
+                fetch()
+            })
+        } else fetch()
     }
 
     private fun renderNotifications(snapshot: NotificationSnapshot) {
+        val scrollY = currentScroll?.scrollY ?: 0
         body.removeAllViews()
         val tabs = row().apply {
             setPadding(dp(4), dp(4), dp(4), dp(4))
@@ -1675,55 +1729,47 @@ class FanfouActivity : AppCompatActivity() {
                 setOnClickListener {
                     notificationSection = key
                     renderNotifications(snapshot)
-                    currentScroll?.scrollTo(0, 0)
+                    currentScroll?.post { currentScroll?.scrollTo(0, 0) }
                 }
             }
             tabs.addView(item, LinearLayout.LayoutParams(0, dp(44), 1f))
         }
         when (notificationSection) {
-            "提及" -> snapshot.mentions.onSuccess { list ->
+            "提及" -> snapshot.mentions?.onSuccess { list ->
                 if (list.isEmpty()) body.addView(emptyState("暂无提及与回复", "有新消息时会出现在这里。"))
                 list.forEach { body.addView(statusCard(it)) }
-            }.onFailure { body.addView(emptyState("提及加载失败", safeMessage(it))) }
-            "私信" -> snapshot.conversations.onSuccess { list ->
+            }?.onFailure { body.addView(errorRow("提及加载失败：" + safeMessage(it)) { refreshNotifications(true) }) }
+            "私信" -> snapshot.conversations?.onSuccess { list ->
                 if (list.isEmpty()) body.addView(emptyState("暂无私信", "收到私信后会出现在这里。"))
                 list.forEach { conversation ->
                     body.addView(dmRow(conversation))
                 }
-            }.onFailure { body.addView(emptyState("私信加载失败", safeMessage(it))) }
-            else -> snapshot.requests.onSuccess { list ->
+            }?.onFailure { body.addView(errorRow("私信加载失败：" + safeMessage(it)) { refreshNotifications(true) }) }
+            else -> snapshot.requests?.onSuccess { list ->
                 if (list.isEmpty()) body.addView(emptyState("暂无关注请求", "新的关注请求会出现在这里。"))
                 list.forEach { user ->
                     body.addView(followRequestRow(user))
                 }
-            }.onFailure { body.addView(emptyState("关注请求加载失败", safeMessage(it))) }
+            }?.onFailure { body.addView(errorRow("关注请求加载失败：" + safeMessage(it)) { refreshNotifications(true) }) }
         }
+        val pending = when (notificationSection) {
+            "提及" -> snapshot.mentions == null
+            "私信" -> snapshot.conversations == null
+            else -> snapshot.requests == null
+        }
+        if (pending) body.addView(label("正在同步通知…", 14, muted).apply {
+            gravity = Gravity.CENTER
+            setPadding(dp(18), dp(40), dp(18), dp(40))
+        })
+        notificationError?.let { reason ->
+            body.addView(label(reason, 12, muted).apply { setPadding(dp(18), dp(16), dp(18), dp(16)) })
+        }
+        currentScroll?.post { currentScroll?.scrollTo(0, scrollY) }
     }
 
-    private fun showTrends() {
+    private fun showExplore() {
         if (!session.showHot) return
-        exploreSection = "热门话题"
-        statusLoader = null
-        timelineProfile = null
-        items.clear()
-        shell("热门", true)
-        loadTrends()
-    }
-
-    private fun switchExploreSection(section: String) {
-        if (exploreSection == section) return
-        generation++
-        exploreSection = section
-        statusLoader = null
-        busy = false
-        items.clear()
-        nextId = null
-        currentScroll?.scrollTo(0, 0)
-        if (section == "随便看看") {
-            statusLoader = { cursor -> api.publicTimeline(cursor) }
-            nextCursor = { received, _ -> received.lastOrNull()?.id }
-            loadStatuses(true)
-        } else showTrends()
+        showTimeline("随便看看", true) { api.publicTimeline(it) }
     }
 
     private fun addExploreHeader() {
@@ -1751,7 +1797,7 @@ class FanfouActivity : AppCompatActivity() {
                 setPadding(dp(16), dp(10), dp(18), dp(10))
                 setOnClickListener {
                     session.clearRecentSearches()
-                    if (exploreSection == "热门话题") loadTrends() else renderStatuses(nextId != null)
+                    renderStatuses(nextId != null)
                 }
             })
             recent.forEach { term ->
@@ -1763,20 +1809,7 @@ class FanfouActivity : AppCompatActivity() {
                 })
             }
         }
-        val tabs = row().apply {
-            setPadding(dp(18), dp(12), dp(18), dp(5))
-        }
-        body.addView(tabs)
-        listOf("热门话题", "随便看看").forEach { name ->
-            val selected = exploreSection == name
-            tabs.addView(label(name, 15, if (selected) accent else muted, selected).apply {
-                gravity = Gravity.CENTER
-                minHeight = dp(46)
-                contentDescription = name + if (selected) "，当前分类" else "，打开分类"
-                setOnClickListener { switchExploreSection(name) }
-            }, LinearLayout.LayoutParams(0, dp(46), 1f))
-        }
-        body.addView(divider())
+        body.addView(divider().apply { top(12) })
     }
 
     private fun searchPublic(rawQuery: String) {
@@ -1784,51 +1817,6 @@ class FanfouActivity : AppCompatActivity() {
         if (query.isBlank()) return toast("请输入搜索词")
         session.rememberSearch(query)
         showTimeline("搜索 · " + query) { api.publicSearch(query, it) }
-    }
-
-    private fun loadTrends() {
-        if (body.childCount == 0) {
-            trendsSnapshot?.let { renderTrends(it) } ?: run {
-                addExploreHeader()
-                body.addView(loadingPlaceholders())
-            }
-        }
-        showFloatingLoading("正在读取热门话题…", showMessage = false)
-        val turn = generation
-        runIo(
-            { api.trends() },
-            { trends ->
-                if (turn != generation) return@runIo
-                hideFloatingLoading()
-                trendsSnapshot = trends
-                renderTrends(trends)
-            },
-            { error ->
-                if (turn != generation) return@runIo
-                hideFloatingLoading()
-                if (trendsSnapshot == null) {
-                    body.removeAllViews()
-                    addExploreHeader()
-                    body.addView(emptyState("热门话题加载失败", safeMessage(error)))
-                }
-                body.addView(errorRow("请检查网络后重试") { loadTrends() })
-            }
-        )
-    }
-
-    private fun renderTrends(trends: List<FanfouTrend>) {
-        body.removeAllViews()
-        addExploreHeader()
-        body.addView(sectionHeader("正在讨论"))
-        body.addView(label("选择话题，查看相关动态。", 13, muted).apply {
-            setPadding(dp(18), 0, dp(18), dp(10))
-        })
-        if (trends.isEmpty()) body.addView(emptyState("暂时没有热门话题", "稍后再来看看。"))
-        trends.forEach { trend ->
-            body.addView(infoRow("# " + trend.name, "查看话题动态  →") {
-                showTimeline("热门 · " + trend.name) { api.publicSearch(trend.query, it) }
-            })
-        }
     }
 
     /**
@@ -2137,7 +2125,7 @@ class FanfouActivity : AppCompatActivity() {
     /** 打开会话即视为已读，同步本机会话快照并重新拉取计数。 */
     private fun markConversationRead(user: FanfouUser) {
         val snapshot = notificationSnapshot ?: return
-        val updated = snapshot.conversations.getOrNull()?.map {
+        val updated = snapshot.conversations?.getOrNull()?.map {
             if (it.peer.id == user.id) it.copy(unread = false) else it
         } ?: return
         notificationSnapshot = snapshot.copy(conversations = Result.success(updated))
@@ -2297,15 +2285,6 @@ class FanfouActivity : AppCompatActivity() {
             setTextColor(Color.WHITE)
             background = rounded(accent, 12)
         })
-        body.addView(divider().apply { top(28) })
-        body.addView(label("直接打开用户时间线", 17, ink, true).apply { top(22) })
-        val directUser = field("用户 ID").apply { top(12) }
-        body.addView(directUser)
-        body.addView(action("查看公开动态") {
-            val id = directUser.text.toString().trim()
-            if (id.isBlank()) return@action toast("请填写用户 ID")
-            openUser(FanfouUser(id, id, "", false))
-        }.apply { top(12) })
     }
 
     private fun searchUsers(query: String) {
@@ -2452,7 +2431,7 @@ class FanfouActivity : AppCompatActivity() {
         shell("设置", false)
         body.addView(sectionHeader("浏览与内容"))
         val hot = Switch(this).apply {
-            text = "显示热门板块"
+            text = "显示随便看看"
             textSize = 16f
             isChecked = session.showHot
             setTextColor(ink)
@@ -2460,11 +2439,11 @@ class FanfouActivity : AppCompatActivity() {
             minHeight = dp(56)
             setOnCheckedChangeListener { _, enabled ->
                 session.showHot = enabled
-                if (!enabled && activeTab == "热门") activeTab = "关注"
+                if (!enabled && activeTab == "随便看看") activeTab = "关注"
             }
         }
         body.addView(hot)
-        body.addView(label("关闭后隐藏入口，并停止热门话题请求。", 13, muted).apply {
+        body.addView(label("关闭后隐藏入口，并停止公开动态请求。", 13, muted).apply {
             setPadding(dp(18), 0, dp(18), dp(18))
         })
         body.addView(divider())
@@ -2481,6 +2460,16 @@ class FanfouActivity : AppCompatActivity() {
             }
             toast("正在清除图片缓存")
         }.apply { top(10); horizontalGutter() })
+        body.addView(action("清除通知缓存") {
+            session.clearNotificationCache()
+            notificationSnapshot = null
+            notificationCacheLoaded = false
+            notificationScrollY = 0
+            toast("已清除通知缓存")
+        }.apply { top(10); horizontalGutter() })
+        body.addView(divider().apply { top(18) })
+        body.addView(sectionHeader("应用"))
+        body.addView(infoRow("关于恰饭", "版本 " + BuildConfig.VERSION_NAME) { showAbout() })
         body.addView(sectionHeader("账号"))
         body.addView(action("退出登录") {
             AlertDialog.Builder(this)
@@ -2497,6 +2486,37 @@ class FanfouActivity : AppCompatActivity() {
                 }
                 .show()
         }.apply { top(8); horizontalGutter() })
+    }
+
+    private fun showAbout() {
+        enterPage { showAbout() }
+        statusLoader = null
+        timelineProfile = null
+        items.clear()
+        busy = false
+        shell("关于恰饭", false)
+        body.addView(box().apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(dp(24), dp(36), dp(24), dp(32))
+            addView(label("恰", 32, accent, true).apply {
+                gravity = Gravity.CENTER
+                background = rounded(subtle, 20)
+            }, LinearLayout.LayoutParams(dp(72), dp(72)))
+            addView(label("恰饭", 26, ink, true).apply {
+                typeface = Typeface.create("serif", Typeface.BOLD)
+                top(18)
+            })
+            addView(label("版本 " + BuildConfig.VERSION_NAME, 14, muted).apply { top(8) })
+        })
+        body.addView(divider())
+        val projectUrl = "https://github.com/hyperMoss/qiafan"
+        body.addView(infoRow("开源项目 ↗", projectUrl) {
+            startActivity(Intent(this, WebPageActivity::class.java)
+                .putExtra(WebPageActivity.EXTRA_URL, projectUrl))
+        }.apply {
+            isFocusable = true
+            contentDescription = "开源项目，打开 GitHub 仓库，" + projectUrl
+        })
     }
 
     private fun showStatusImage(status: FanfouStatus) {
@@ -2668,21 +2688,133 @@ class FanfouActivity : AppCompatActivity() {
         if (relation != ProfileRelation.SELF) {
             val inFlight = user.id in profileFollowInFlight
             val metadataReady = loadedProfileId == user.id
-            addView(action(when {
+            val controls = row().apply { top(16) }
+            addView(controls)
+            controls.addView(action(when {
                 !metadataReady -> "读取资料中…"
                 inFlight -> "正在提交…"
                 relation == ProfileRelation.FOLLOWING -> "已关注"
                 relation == ProfileRelation.PENDING -> "已申请"
-                relation == ProfileRelation.UNKNOWN -> "确认关注关系中…"
+                relation == ProfileRelation.UNKNOWN -> "确认关系中…"
                 user.protected -> "申请关注"
                 else -> "关注"
             }) { followProfile(user) }.apply {
-                top(16)
                 isEnabled = metadataReady && !inFlight && relation !in listOf(ProfileRelation.FOLLOWING, ProfileRelation.PENDING, ProfileRelation.UNKNOWN)
                 alpha = if (isEnabled) 1f else 0.6f
-            })
+            }, LinearLayout.LayoutParams(0, dp(48), 1f))
+            val canChat = metadataReady && !user.protected
+            controls.addView(action("私聊") { openConversation(user) }.apply {
+                isEnabled = canChat
+                setTextColor(if (canChat) Color.WHITE else muted)
+                background = rounded(if (canChat) accent else subtle, 12)
+                contentDescription = if (canChat) "私聊，打开会话" else "私聊不可用，" + if (metadataReady) "对方已加锁" else "正在读取资料"
+            }, LinearLayout.LayoutParams(0, dp(48), 1f).apply { leftMargin = dp(12) })
+        }
+        if (relation != ProfileRelation.SELF) {
+            val links = row().apply { top(12) }
+            addView(links)
+            listOf("关注", "被关注", "TA看到的").forEach { title ->
+                links.addView(label(title, 14, accent, true).apply {
+                    gravity = Gravity.CENTER
+                    minHeight = dp(48)
+                    background = rounded(subtle, 10)
+                    isFocusable = true
+                    isEnabled = loadedProfileId == user.id
+                    alpha = if (isEnabled) 1f else 0.5f
+                    contentDescription = when (title) {
+                        "关注" -> "关注，查看他关注的人"
+                        "被关注" -> "被关注，查看关注他的人"
+                        else -> "TA看到的，打开用户主页时间线"
+                    }
+                    setOnClickListener {
+                        when (title) {
+                            "关注" -> showConnections(user, false)
+                            "被关注" -> showConnections(user, true)
+                            else -> showTimeline(user.name + " · TA看到的") { api.viewedTimeline(user.id, it) }
+                        }
+                    }
+                }, LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+                    if (title != "关注") leftMargin = dp(8)
+                })
+            }
         }
         addView(divider().apply { top(18) })
+    }
+
+    private fun showConnections(user: FanfouUser, followers: Boolean) {
+        val users = mutableListOf<FanfouUser>()
+        var page = 1
+        var hasMore = true
+        var loading = false
+        var failure: String? = null
+        lateinit var open: () -> Unit
+        lateinit var load: () -> Unit
+        fun render() {
+            val scrollY = currentScroll?.scrollY ?: 0
+            body.removeAllViews()
+            users.forEach { person -> body.addView(connectionRow(person)) }
+            if (users.isEmpty() && !loading && failure == null) body.addView(emptyState("暂无用户", "这里还没有可显示的用户。"))
+            if (loading) body.addView(label("正在读取…", 14, muted).apply { setPadding(dp(18), dp(24), dp(18), dp(24)) })
+            else if (failure != null) body.addView(errorRow(failure!!) { load() })
+            else if (hasMore) body.addView(action("加载更多") { load() }.apply { horizontalGutter() })
+            currentScroll?.post { currentScroll?.scrollTo(0, scrollY) }
+        }
+        load = load@{
+            if (loading) return@load
+            loading = true
+            failure = null
+            render()
+            runIo({ if (followers) api.followers(user.id, page) else api.followingUsers(user.id, page) }, { received ->
+                loading = false
+                val known = users.mapTo(mutableSetOf()) { it.id }
+                val fresh = received.filter { it.id.isNotBlank() && known.add(it.id) }
+                users.addAll(fresh)
+                hasMore = received.size >= 20 && fresh.isNotEmpty()
+                page++
+                if (currentPage === open) render()
+            }, { error ->
+                loading = false
+                failure = "无法读取用户列表：" + safeMessage(error)
+                if (currentPage === open) render()
+            })
+        }
+        open = {
+            enterPage(open)
+            statusLoader = null
+            timelineProfile = null
+            items.clear()
+            busy = false
+            shell(user.name + if (followers) " · 被关注" else " · 关注", false)
+            render()
+            if (users.isEmpty() && failure == null) load()
+        }
+        open()
+    }
+
+    private fun connectionRow(user: FanfouUser): View = box().apply {
+        setBackgroundColor(Color.WHITE)
+        isFocusable = true
+        contentDescription = "打开${user.name.ifBlank { user.id }}的主页"
+        setOnClickListener { openUser(user) }
+        val line = row().apply {
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(18), dp(14), dp(18), dp(14))
+        }
+        line.addView(avatarFrame(user, 44), LinearLayout.LayoutParams(dp(44), dp(44)))
+        line.addView(box().apply {
+            setPadding(dp(12), 0, 0, 0)
+            addView(label(user.name.ifBlank { user.id }, 16, ink, true).apply {
+                maxLines = 1
+                ellipsize = TextUtils.TruncateAt.END
+            })
+            addView(label("@" + user.id, 13, muted).apply {
+                top(4)
+                maxLines = 1
+                ellipsize = TextUtils.TruncateAt.END
+            })
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        addView(line)
+        addView(divider())
     }
 
     private fun avatarFrame(user: FanfouUser?, size: Int, large: Boolean = false): FrameLayout =
