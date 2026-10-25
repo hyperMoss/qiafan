@@ -82,6 +82,8 @@ class FanfouActivity : AppCompatActivity() {
     private var nextCursor: (List<FanfouStatus>, String?) -> String? =
         { received, _ -> received.lastOrNull()?.id }
     private var items = mutableListOf<FanfouStatus>()
+    private var timelineFooter: View? = null
+    private val timelineCards = mutableMapOf<String, View>()
     private var nextId: String? = null
     private var homeItems: List<FanfouStatus> = emptyList()
     private var homeNextId: String? = null
@@ -139,6 +141,7 @@ class FanfouActivity : AppCompatActivity() {
     private val quoteFailed = mutableSetOf<String>()
     private val quoteInFlight = mutableSetOf<String>()
     private var quoteRenderPending = false
+    private val pendingQuoteRenders = mutableSetOf<String>()
     private var replyList: List<FanfouStatus> = emptyList()
     private var replyState: String? = null
     private var replyError: String = ""
@@ -246,6 +249,7 @@ class FanfouActivity : AppCompatActivity() {
         quoteFailed.clear()
         quoteInFlight.clear()
         quoteRenderPending = false
+        pendingQuoteRenders.clear()
         items.clear()
         nextId = null
         favoriteState.clear()
@@ -384,6 +388,8 @@ class FanfouActivity : AppCompatActivity() {
      */
     private fun shell(title: String, tabs: Boolean, header: View? = null, footer: View? = null) {
         generation++
+        timelineFooter = null
+        timelineCards.clear()
         showingTabs = tabs
         root.removeAllViews()
         val shellHost = FrameLayout(this)
@@ -676,7 +682,7 @@ class FanfouActivity : AppCompatActivity() {
                 nextId = when {
                     reset && mergeFresh -> if (received.size >= 20) received.lastOrNull()?.id else null
                     received.size >= 20 && (fresh.isNotEmpty() || (showingTabs && activeTab == "关注")) ->
-                        nextCursor(received, cursor)
+                        nextCursor(received, cursor)?.takeIf { it != cursor }
                     else -> null
                 }
                 if (showingTabs && activeTab == "关注") {
@@ -688,7 +694,8 @@ class FanfouActivity : AppCompatActivity() {
                     exploreItems = items.toList()
                     exploreNextId = nextId
                 }
-                renderStatuses(nextId != null, anchor)
+                if (reset) renderStatuses(nextId != null, anchor)
+                else appendStatuses(fresh, nextId != null)
             },
             { error ->
                 if (turn != generation) return@runIo
@@ -711,7 +718,9 @@ class FanfouActivity : AppCompatActivity() {
                         if (showingTabs && activeTab == "随便看看") addExploreHeader()
                         body.addView(emptyState("暂时无法读取动态", safeMessage(error)))
                     }
-                    body.addView(errorRow("加载失败：" + safeMessage(error)) { loadStatuses(reset) })
+                    timelineFooter?.let { body.removeView(it) }
+                    timelineFooter = errorRow("加载失败：" + safeMessage(error)) { loadStatuses(reset) }
+                        .also { body.addView(it) }
                 }
             }
         )
@@ -749,14 +758,12 @@ class FanfouActivity : AppCompatActivity() {
         val scroll = body.parent as? ScrollView
         val previousY = scroll?.scrollY ?: 0
         body.removeAllViews()
+        timelineFooter = null
+        timelineCards.clear()
         timelineProfile?.let { body.addView(profileHeader(it)) }
         if (showingTabs && activeTab == "随便看看") addExploreHeader()
         if (items.isEmpty()) body.addView(emptyState("这里还没有动态", "下拉刷新，稍后再来看看。"))
-        items.forEach { body.addView(statusCard(it)) }
-        if (hasMore) body.addView(label("继续下滑，加载更多", 12, muted).apply {
-            gravity = Gravity.CENTER
-            setPadding(dp(16), dp(18), dp(16), dp(18))
-        })
+        appendStatuses(items, hasMore)
         scroll?.post {
             // 有锚点时把原视口首卡放回原位（上方插入了新动态）；找不到再退回原滚动位置。
             val anchorIndex = anchorId?.let { id -> items.indexOfFirst { it.id == id } }
@@ -766,6 +773,25 @@ class FanfouActivity : AppCompatActivity() {
             } else {
                 scroll.scrollTo(0, previousY)
             }
+        }
+    }
+
+    private fun appendStatuses(fresh: List<FanfouStatus>, hasMore: Boolean) {
+        timelineFooter?.let { body.removeView(it) }
+        timelineFooter = null
+        fresh.forEach { status ->
+            val index = items.indexOfFirst { it.id == status.id }
+            val successor = items.drop(index + 1).firstNotNullOfOrNull { timelineCards[it.id] }
+            val position = successor?.let { body.indexOfChild(it) } ?: body.childCount
+            val card = statusCard(status)
+            timelineCards[status.id] = card
+            body.addView(card, position)
+        }
+        if (hasMore) {
+            timelineFooter = label("继续下滑，加载更多", 12, muted).apply {
+                gravity = Gravity.CENTER
+                setPadding(dp(16), dp(18), dp(16), dp(18))
+            }.also { body.addView(it) }
         }
     }
 
@@ -1379,7 +1405,7 @@ class FanfouActivity : AppCompatActivity() {
             { original ->
                 quoteInFlight.remove(statusId)
                 quoteContext[statusId] = original
-                scheduleQuoteRender()
+                scheduleQuoteRender(statusId)
             },
             {
                 quoteInFlight.remove(statusId)
@@ -1388,17 +1414,27 @@ class FanfouActivity : AppCompatActivity() {
         )
     }
 
-    private fun scheduleQuoteRender() {
+    private fun scheduleQuoteRender(statusId: String) {
+        pendingQuoteRenders.add(statusId)
         if (quoteRenderPending) return
         quoteRenderPending = true
         root.post {
             quoteRenderPending = false
+            val resolved = pendingQuoteRenders.toSet()
+            pendingQuoteRenders.clear()
             when {
                 showingTabs && activeTab == "通知" ->
                     renderNotifications(notificationSnapshot ?: NotificationSnapshot())
                 showingTabs && activeTab == "关注" && statusLoader != null -> {
-                    val anchor = firstVisibleItemId()
-                    renderStatuses(nextId != null, anchor)
+                    items.filter { statusContent(it).quoteId in resolved }.forEach { status ->
+                        val previous = timelineCards[status.id] ?: return@forEach
+                        val position = body.indexOfChild(previous)
+                        if (position < 0) return@forEach
+                        val updated = statusCard(status)
+                        body.removeViewAt(position)
+                        body.addView(updated, position)
+                        timelineCards[status.id] = updated
+                    }
                 }
                 !showingTabs && commentTarget != null && statusLoader == null &&
                     generation == detailGeneration -> commentTarget?.let(::renderStatusDetail)
