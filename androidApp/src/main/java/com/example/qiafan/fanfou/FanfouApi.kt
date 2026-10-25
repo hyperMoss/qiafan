@@ -112,6 +112,7 @@ internal class FanfouApi(
 ) {
     private val apiBase = "https://api.fanfou.com"
     private val authBase = "https://fanfou.com"
+    private val homeFeedKey = "home:/statuses/home_timeline.json"
 
     fun xauth(username: String, password: String): OAuthToken {
         require(username.isNotBlank() && password.isNotBlank())
@@ -147,8 +148,25 @@ internal class FanfouApi(
         if (error.pendingFollowRequest) FanfouFollowResult.Pending else throw error
     }
 
-    fun home(maxId: String? = null): List<FanfouStatus> =
-        statuses(statusGet("/statuses/home_timeline.json", page(maxId)))
+    fun home(maxId: String? = null): List<FanfouStatus> {
+        val payload = statusGet("/statuses/home_timeline.json", page(maxId))
+        // 关注流首页进站缓存：只留最新一页、覆盖写，与通知缓存共用同一套加密存储和清理。
+        if (maxId.isNullOrBlank()) {
+            runCatching { notificationCache?.writeNotification(homeFeedKey, payload, credentials()) }
+        }
+        return statuses(payload)
+    }
+
+    /** 上一会话缓存关注流首页；超过 24 小时、换号或损坏时返回 null，走正常加载。 */
+    fun cachedHome(): List<FanfouStatus>? {
+        val payload = notificationCache?.readNotification(homeFeedKey, credentials()) ?: return null
+        return runCatching { statuses(payload) }.getOrNull()?.takeIf { it.isNotEmpty() }
+    }
+
+    /** 删除动态后让首页缓存失效，避免下次进站短暂显示已删除的内容。 */
+    fun invalidateHomeCache() {
+        runCatching { notificationCache?.writeNotification(homeFeedKey, "[]", credentials()) }
+    }
 
     fun userTimeline(userId: String, maxId: String? = null): List<FanfouStatus> =
         statuses(statusGet("/statuses/user_timeline.json", page(maxId) + ("id" to userId)))

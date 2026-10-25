@@ -85,6 +85,7 @@ class FanfouActivity : AppCompatActivity() {
     private var homeItems: List<FanfouStatus> = emptyList()
     private var homeNextId: String? = null
     private var homeScrollY = 0
+    private var homeCacheLoaded = false
     private var lastFollowTabTapAt = 0L
     private var busy = false
     private var showingTabs = false
@@ -131,6 +132,12 @@ class FanfouActivity : AppCompatActivity() {
     private val profileFollowInFlight = mutableSetOf<String>()
     private var chatPeer: FanfouUser? = null
     private var commentTarget: FanfouStatus? = null
+    private var detailGeneration = -1
+    // 引用卡的原动态缓存：进站后每条回复/转发最多补拉一次，失败不再重复请求。
+    private val quoteContext = mutableMapOf<String, FanfouStatus>()
+    private val quoteFailed = mutableSetOf<String>()
+    private val quoteInFlight = mutableSetOf<String>()
+    private var quoteRenderPending = false
     private var replyList: List<FanfouStatus> = emptyList()
     private var replyState: String? = null
     private var replyError: String = ""
@@ -233,6 +240,11 @@ class FanfouActivity : AppCompatActivity() {
         homeItems = emptyList()
         homeNextId = null
         homeScrollY = 0
+        homeCacheLoaded = false
+        quoteContext.clear()
+        quoteFailed.clear()
+        quoteInFlight.clear()
+        quoteRenderPending = false
         items.clear()
         nextId = null
         favoriteState.clear()
@@ -585,14 +597,49 @@ class FanfouActivity : AppCompatActivity() {
         }
         busy = false
         shell(title, tabs)
-        if (restoreHome || restoreExplore) {
-            renderStatuses(nextId != null)
-            val savedY = if (restoreHome) homeScrollY else exploreScrollY
-            currentScroll?.post { currentScroll?.scrollTo(0, savedY) }
-        } else loadStatuses(true)
+        val turn = generation
+        when {
+            restoreHome || restoreExplore -> {
+                renderStatuses(nextId != null)
+                val savedY = if (restoreHome) homeScrollY else exploreScrollY
+                currentScroll?.post { currentScroll?.scrollTo(0, savedY) }
+            }
+            tabs && title == "关注" && !homeCacheLoaded -> restoreHomeCache(turn)
+            else -> loadStatuses(true)
+        }
     }
 
-    private fun loadStatuses(reset: Boolean) {
+    /** 进站先用上一会话缓存的关注流首页渲染，再静默合并新动态，避免全屏骨架。 */
+    private fun restoreHomeCache(turn: Int) {
+        busy = true
+        body.addView(loadingPlaceholders())
+        runIo(
+            { api.cachedHome() },
+            { cached ->
+                if (turn != generation) return@runIo
+                homeCacheLoaded = true
+                busy = false
+                if (cached == null) {
+                    loadStatuses(true)
+                    return@runIo
+                }
+                items.addAll(cached)
+                nextId = items.lastOrNull()?.id
+                homeItems = items.toList()
+                homeNextId = nextId
+                renderStatuses(nextId != null)
+                loadStatuses(reset = true, mergeFresh = true)
+            },
+            {
+                if (turn == generation) {
+                    busy = false
+                    loadStatuses(true)
+                }
+            }
+        )
+    }
+
+    private fun loadStatuses(reset: Boolean, mergeFresh: Boolean = false) {
         val loader = statusLoader ?: return
         if (busy) return
         busy = true
@@ -615,17 +662,24 @@ class FanfouActivity : AppCompatActivity() {
                 if (turn != generation) return@runIo
                 busy = false
                 hideFloatingLoading()
-                if (reset) {
+                // 合并进站缓存前先记下视口第一张卡，合并后锚定它，阅读位置不跳。
+                val anchor = if (mergeFresh && (currentScroll?.scrollY ?: 0) > 0) firstVisibleItemId() else null
+                if (reset && !mergeFresh) {
                     items.clear()
                     nextId = null
                 }
-                val known = items.mapTo(mutableSetOf()) { it.id }
-                val fresh = received.filter { it.id.isNotBlank() && known.add(it.id) }
-                items.addAll(fresh)
-                nextId = if (received.size >= 20 && fresh.isNotEmpty()) {
-                    nextCursor(received, cursor)
-                } else null
+                val fresh = if (showingTabs && activeTab == "关注") mergeHome(received) else {
+                    val known = items.mapTo(mutableSetOf()) { it.id }
+                    received.filter { it.id.isNotBlank() && known.add(it.id) }.also { items.addAll(it) }
+                }
+                nextId = when {
+                    reset && mergeFresh -> if (received.size >= 20) received.lastOrNull()?.id else null
+                    received.size >= 20 && (fresh.isNotEmpty() || (showingTabs && activeTab == "关注")) ->
+                        nextCursor(received, cursor)
+                    else -> null
+                }
                 if (showingTabs && activeTab == "关注") {
+                    homeCacheLoaded = true
                     homeItems = items.toList()
                     homeNextId = nextId
                 }
@@ -633,7 +687,7 @@ class FanfouActivity : AppCompatActivity() {
                     exploreItems = items.toList()
                     exploreNextId = nextId
                 }
-                renderStatuses(nextId != null)
+                renderStatuses(nextId != null, anchor)
             },
             { error ->
                 if (turn != generation) return@runIo
@@ -662,7 +716,35 @@ class FanfouActivity : AppCompatActivity() {
         )
     }
 
-    private fun renderStatuses(hasMore: Boolean) {
+    /**
+     * 关注流按 id 从新到旧合并：进站合并与补页都可能拿到夹在已有内容中间的动态，
+     * 直接追加会打乱时间序；id 非数值时退回普通追加，尊重服务端顺序。
+     */
+    private fun mergeHome(received: List<FanfouStatus>): List<FanfouStatus> {
+        val known = items.mapTo(mutableSetOf()) { it.id }
+        val fresh = received.filter { it.id.isNotBlank() && known.add(it.id) }
+        if (fresh.isEmpty()) return fresh
+        if ((items + fresh).any { it.id.toLongOrNull() == null }) {
+            items.addAll(fresh)
+            return fresh
+        }
+        val merged = (items + fresh).sortedByDescending { it.id.toLong() }
+        items.clear()
+        items.addAll(merged)
+        return fresh
+    }
+
+    /** 当前视口顶部第一张卡对应的动态 id，合并新内容后用它锚定阅读位置。 */
+    private fun firstVisibleItemId(): String? {
+        val scroll = currentScroll ?: return null
+        val y = scroll.scrollY
+        for (index in 0 until body.childCount) {
+            if (body.getChildAt(index).bottom > y) return items.getOrNull(index)?.id
+        }
+        return items.firstOrNull()?.id
+    }
+
+    private fun renderStatuses(hasMore: Boolean, anchorId: String? = null) {
         val scroll = body.parent as? ScrollView
         val previousY = scroll?.scrollY ?: 0
         body.removeAllViews()
@@ -674,7 +756,16 @@ class FanfouActivity : AppCompatActivity() {
             gravity = Gravity.CENTER
             setPadding(dp(16), dp(18), dp(16), dp(18))
         })
-        scroll?.post { scroll.scrollTo(0, previousY) }
+        scroll?.post {
+            // 有锚点时把原视口首卡放回原位（上方插入了新动态）；找不到再退回原滚动位置。
+            val anchorIndex = anchorId?.let { id -> items.indexOfFirst { it.id == id } }
+                ?.takeIf { it >= 0 && it < items.size }
+            if (anchorIndex != null && anchorIndex < body.childCount) {
+                scroll.scrollTo(0, body.getChildAt(anchorIndex).top - dp(2))
+            } else {
+                scroll.scrollTo(0, previousY)
+            }
+        }
     }
 
     private fun statusCard(status: FanfouStatus, detail: Boolean = false): View {
@@ -708,24 +799,51 @@ class FanfouActivity : AppCompatActivity() {
             setOnClickListener { showStatusActions(status) }
         }, LinearLayout.LayoutParams(dp(44), dp(44)))
         card.addView(header)
-        card.addView(mentionLabel(
-            status.text.ifBlank { "（无文字）" }, 16, ink,
-            links = status.links,
-            emphasis = status.emphasis,
-            mentions = status.mentions,
-            selectable = detail,
-            knownUsers = listOf(status.user) + listOfNotNull(
-                status.replyToUserId.takeIf { it.isNotBlank() }?.let {
-                    FanfouUser(it, status.replyToScreenName.ifBlank { it }, "", false)
-                }
-            ),
-            onBodyClick = if (detail) null else ({ openStatus(status) }),
-            onBodyLongPress = if (detail) null else ({ showStatusActions(status) })
-        ).apply {
-            top(10)
-            setLineSpacing(dp(4).toFloat(), 1f)
-        })
+        val content = statusBody(status)
+        if (content.text.isNotEmpty()) {
+            card.addView(mentionLabel(
+                content.text, 16, ink,
+                links = content.links,
+                emphasis = content.emphasis,
+                mentions = content.mentions,
+                selectable = detail,
+                knownUsers = listOf(status.user) + listOfNotNull(
+                    status.replyToUserId.takeIf { it.isNotBlank() }?.let {
+                        FanfouUser(it, status.replyToScreenName.ifBlank { it }, "", false)
+                    }
+                ),
+                onBodyClick = if (detail) null else ({ openStatus(status) }),
+                onBodyLongPress = if (detail) null else ({ showStatusActions(status) })
+            ).apply {
+                top(10)
+                setLineSpacing(dp(4).toFloat(), 1f)
+            })
+        }
+        // 评论与转发统一：正文 + 引用卡（转发的引用来自内嵌原文或补拉，评论的引用补拉原动态）。
+        // 引用确实拿不到时，评论退回一行"来自 @昵称"的来源提示。
+        var quoted: FanfouStatus? = null
+        if (content.quoteId != null) {
+            val quoteId = content.quoteId
+            quoted = quoteContext[quoteId] ?: items.firstOrNull { it.id == quoteId }
+            val embedded = content.embeddedQuote
+            val quoteUnavailable = !quoteFetchAllowed(detail) || quoteId in quoteFailed
+            if (quoted == null && embedded != null) {
+                card.addView(embeddedQuoteBox(content.captionName, embedded, quoteId),
+                    LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
+            } else if (quoted == null && status.repostId == null && quoteUnavailable) {
+                card.addView(quoteSourceLine(content.captionName, quoteId),
+                    LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
+            }
+            if (quoted == null && quoteFetchAllowed(detail)) requestQuoteContext(quoteId)
+        }
+        quoted?.let { original ->
+            card.addView(originalStatusCard(original, listOf(status.user, original.user)),
+                LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
+        }
         (status.originalPhoto ?: status.photo)?.let { url ->
+            // 引用卡已带同一张原图时不再重复展示。
+            val covered = quoted?.let { (it.originalPhoto ?: it.photo) == url } == true
+            if (covered) return@let
             val targetWidth = dp((minOf(720, resources.configuration.screenWidthDp) - 36).coerceAtLeast(1))
             val photoFrame = FrameLayout(this).apply {
                 background = rounded(subtle, 8)
@@ -864,6 +982,7 @@ class FanfouActivity : AppCompatActivity() {
                 items.removeAll { it.id == status.id }
                 homeItems = homeItems.filterNot { it.id == status.id }
                 replyList = replyList.filterNot { it.id == status.id }
+                api.invalidateHomeCache()
                 if (statusLoader != null) renderStatuses(nextId != null)
                 hideFloatingLoading()
                 toast("已删除动态")
@@ -1150,6 +1269,7 @@ class FanfouActivity : AppCompatActivity() {
         replyState = null
         replyError = ""
         shell("动态详情", false, footer = replyComposer(status))
+        detailGeneration = generation
         renderStatusDetail(status)
         val turn = generation
         runIo(
@@ -1178,9 +1298,9 @@ class FanfouActivity : AppCompatActivity() {
 
     /** 详情页整体重绘：正文 + 回复上下文 + 评论列表（读取失败时给出真实原因）。 */
     private fun renderStatusDetail(status: FanfouStatus) {
+        val scrollY = currentScroll?.scrollY ?: 0
         body.removeAllViews()
         body.addView(statusCard(status, detail = true))
-        replyHint(status)?.let { body.addView(it) }
         val head = row().apply {
             gravity = Gravity.BOTTOM
             setPadding(dp(18), dp(22), dp(18), dp(10))
@@ -1204,6 +1324,145 @@ class FanfouActivity : AppCompatActivity() {
                 emptyState("评论加载失败", replyError.ifBlank { "请稍后重试" })
             )
             else -> body.addView(loadingPlaceholders())
+        }
+        currentScroll?.post { currentScroll?.scrollTo(0, scrollY) }
+    }
+
+    /** 卡片正文的展示拆解：回复剥掉 `@昵称 ` 前缀，转发剥掉 `转@昵称 ` 前缀，引用内容单独成卡。 */
+    private data class StatusBody(
+        val text: String,
+        val links: List<FanfouTextLink> = emptyList(),
+        val emphasis: List<FanfouTextEmphasis> = emptyList(),
+        val mentions: List<FanfouMention> = emptyList(),
+        val captionName: String? = null,
+        val quoteId: String? = null,
+        val embeddedQuote: String? = null
+    )
+
+    /**
+     * 转发按 `转@昵称 ` 拆出引用内容（原文本里就带着原文），拆不出时整体保留；
+     * 回复剥掉 `@昵称 ` 前缀并记下来源，富文本区间同步平移；普通动态原样展示。
+     */
+    private fun statusBody(status: FanfouStatus): StatusBody {
+        val text = status.text
+        if (status.repostId != null) {
+            val marker = text.indexOf("转@")
+            val prefix = if (marker >= 0) {
+                Regex("^转@(\\S+?)(?:\\s*[:：]\\s*|\\s+|\$)").find(text.substring(marker))
+            } else null
+            if (prefix != null) {
+                val cut = marker + prefix.range.last + 1
+                return StatusBody(
+                    text = if (marker > 0) text.substring(0, marker).trim() else "",
+                    quoteId = status.repostId,
+                    captionName = prefix.groupValues[1],
+                    embeddedQuote = text.substring(cut).trim().ifBlank { null }
+                )
+            }
+            return StatusBody(text = text.ifBlank { "（无文字）" }, quoteId = status.repostId)
+        }
+        if (status.replyToStatusId.isNotBlank()) {
+            val match = Regex("^@(\\S+)\\s+").find(text)
+            val cut = match?.range?.last?.plus(1) ?: 0
+            return StatusBody(
+                text = if (cut > 0) text.substring(cut).ifBlank { "（无文字）" } else text.ifBlank { "（无文字）" },
+                links = shiftLinks(status.links, cut),
+                emphasis = shiftEmphasis(status.emphasis, cut),
+                mentions = shiftMentions(status.mentions, cut),
+                captionName = match?.groupValues?.get(1)
+                    ?: status.replyToScreenName.ifBlank { status.replyToUserId }.ifBlank { null },
+                quoteId = status.replyToStatusId
+            )
+        }
+        return StatusBody(
+            text = text.ifBlank { "（无文字）" },
+            links = status.links,
+            emphasis = status.emphasis,
+            mentions = status.mentions
+        )
+    }
+
+    /** 剥掉前缀 [cut] 个字符后平移富文本区间；落在前缀里的区间直接丢弃。 */
+    private fun shiftLinks(ranges: List<FanfouTextLink>, cut: Int) =
+        ranges.mapNotNull { if (it.start >= cut) FanfouTextLink(it.start - cut, it.end - cut, it.url) else null }
+
+    private fun shiftEmphasis(ranges: List<FanfouTextEmphasis>, cut: Int) =
+        ranges.mapNotNull { if (it.start >= cut) FanfouTextEmphasis(it.start - cut, it.end - cut) else null }
+
+    private fun shiftMentions(ranges: List<FanfouMention>, cut: Int) =
+        ranges.mapNotNull { if (it.start >= cut) FanfouMention(it.start - cut, it.end - cut, it.userId) else null }
+
+    /** 评论的引用原动态确实拿不到时，退回一行来源提示；点按仍可尝试打开原动态。 */
+    private fun quoteSourceLine(name: String?, quoteId: String?): View = label(
+        if (name != null) "来自 @$name" else "来自原动态", 12, muted
+    ).apply {
+        minHeight = dp(24)
+        gravity = Gravity.CENTER_VERTICAL
+        if (quoteId?.isNotBlank() == true) {
+            isClickable = true
+            isFocusable = true
+            contentDescription = "查看来源原动态"
+            setOnClickListener { openStatusById(quoteId) }
+        }
+    }
+
+    /** 原动态暂不可达（已删、受保护或还没拉到）时，引用内容先用转发文本里带的原文。 */
+    private fun embeddedQuoteBox(name: String?, text: String, quoteId: String?): View = box().apply {
+        setPadding(dp(12), dp(10), dp(12), dp(12))
+        background = rounded(subtle, 8)
+        val target = quoteId?.takeIf { it.isNotBlank() }
+        isClickable = target != null
+        isFocusable = target != null
+        if (target != null) {
+            contentDescription = "查看被转发的原动态"
+            setOnClickListener { openStatusById(target) }
+        }
+        addView(label(if (name != null) "转自 @$name" else "转发的动态", 11, muted, true))
+        addView(mentionLabel(text, 13, ink).apply {
+            top(7)
+            setLineSpacing(dp(2).toFloat(), 1f)
+        })
+    }
+
+    /** 只在关注流、通知提及和详情页补拉引用原动态；搜索、随便看看等保持零额外请求。 */
+    private fun quoteFetchAllowed(detail: Boolean): Boolean =
+        detail || (showingTabs && (activeTab == "关注" || activeTab == "通知"))
+
+    /** 引用卡缺原动态时补拉一次，结果全会话共享；失败不再重复请求。 */
+    private fun requestQuoteContext(statusId: String) {
+        if (statusId.isBlank() || statusId in quoteContext ||
+            statusId in quoteInFlight || statusId in quoteFailed) return
+        if (quoteInFlight.size >= 6) return
+        quoteInFlight.add(statusId)
+        runIo(
+            { api.showStatus(statusId) },
+            { original ->
+                quoteInFlight.remove(statusId)
+                quoteContext[statusId] = original
+                scheduleQuoteRender()
+            },
+            {
+                quoteInFlight.remove(statusId)
+                quoteFailed.add(statusId)
+            }
+        )
+    }
+
+    private fun scheduleQuoteRender() {
+        if (quoteRenderPending) return
+        quoteRenderPending = true
+        root.post {
+            quoteRenderPending = false
+            when {
+                showingTabs && activeTab == "通知" ->
+                    renderNotifications(notificationSnapshot ?: NotificationSnapshot())
+                showingTabs && activeTab == "关注" && statusLoader != null -> {
+                    val anchor = firstVisibleItemId()
+                    renderStatuses(nextId != null, anchor)
+                }
+                !showingTabs && commentTarget != null && statusLoader == null &&
+                    generation == detailGeneration -> commentTarget?.let(::renderStatusDetail)
+            }
         }
     }
 
@@ -1261,7 +1520,7 @@ class FanfouActivity : AppCompatActivity() {
         addView(divider())
     }
 
-    /** 评论下方的原动态保留作者、时间、完整正文和图片；卡片空白处可进入动态详情。 */
+    /** 引用卡：紧凑展示被回复或被转发的原动态，点按进入详情；作者行可进其主页。 */
     private fun originalStatusCard(
         original: FanfouStatus,
         contextUsers: List<FanfouUser>
@@ -1270,35 +1529,22 @@ class FanfouActivity : AppCompatActivity() {
         background = rounded(subtle, 8)
         isClickable = original.id.isNotBlank()
         isFocusable = original.id.isNotBlank()
-        contentDescription = "查看被回复的原动态"
+        contentDescription = "查看原动态"
         if (original.id.isNotBlank()) setOnClickListener { openStatusById(original.id) }
-
-        val title = row().apply { gravity = Gravity.CENTER_VERTICAL }
-        title.addView(label("原动态", 11, muted, true), LinearLayout.LayoutParams(0, -2, 1f))
-        title.addView(label("查看详情 ›", 11, accent))
-        addView(title)
 
         val author = row().apply {
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(9), 0, 0)
             isClickable = true
             contentDescription = "打开${original.user.name.ifBlank { original.user.id }}的主页"
             setOnClickListener { openUser(original.user) }
         }
-        author.addView(avatarFrame(original.user, 30), LinearLayout.LayoutParams(dp(30), dp(30)))
-        val identity = box().apply { setPadding(dp(8), 0, 0, 0) }
-        identity.addView(label(original.user.name.ifBlank { original.user.id }, 13, ink, true))
-        identity.addView(mentionLabel(
-            "@${original.user.id}",
-            11,
-            muted,
-            knownUsers = contextUsers
-        ).apply {
-            typeface = Typeface.MONOSPACE
-            top(1)
-        })
-        author.addView(identity, LinearLayout.LayoutParams(0, -2, 1f))
-        author.addView(label(relativeTime(original.createdAt), 10, muted).apply {
+        author.addView(avatarFrame(original.user, 28), LinearLayout.LayoutParams(dp(28), dp(28)))
+        author.addView(label(original.user.name.ifBlank { original.user.id }, 13, ink, true).apply {
+            setPadding(dp(8), 0, 0, 0)
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        author.addView(label(relativeTime(original.createdAt), 11, muted).apply {
             typeface = Typeface.MONOSPACE
         })
         addView(author)
@@ -1313,12 +1559,12 @@ class FanfouActivity : AppCompatActivity() {
             mentions = original.mentions,
             selectable = true
         ).apply {
-            top(9)
+            top(8)
             setLineSpacing(dp(2).toFloat(), 1f)
         })
         original.photo?.let {
-            addView(inlinePhoto(original, 190), LinearLayout.LayoutParams(-1, dp(190)).apply {
-                topMargin = dp(10)
+            addView(inlinePhoto(original, 170), LinearLayout.LayoutParams(-1, dp(170)).apply {
+                topMargin = dp(8)
             })
         }
     }
@@ -1449,32 +1695,6 @@ class FanfouActivity : AppCompatActivity() {
         setOnTouchListener { _, event ->
             detector.onTouchEvent(event)
             !selectable
-        }
-    }
-
-    /** 这条动态本身是回复时，标出它在回谁，避免脱离上下文。 */
-    private fun replyHint(status: FanfouStatus): View? {
-        val target = status.replyToStatusId.takeIf { it.isNotBlank() } ?: return null
-        val who = status.replyToScreenName.ifBlank {
-            status.replyToUserId.ifBlank { "上一条动态" }
-        }
-        return row().apply {
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(18), dp(14), dp(18), dp(14))
-            setBackgroundColor(subtle)
-            addView(label("回复", 11, muted).apply { typeface = Typeface.MONOSPACE })
-            addView(label(who, 12, ink).apply {
-                setPadding(dp(8), 0, dp(8), 0)
-                maxLines = 1
-                ellipsize = TextUtils.TruncateAt.END
-            }, LinearLayout.LayoutParams(0, -2, 1f))
-            addView(label("查看原动态", 12, accent).apply {
-                minHeight = dp(44)
-                gravity = Gravity.CENTER
-                setPadding(dp(8), 0, 0, 0)
-                setOnClickListener { openStatusById(target) }
-            })
-            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) }
         }
     }
 
@@ -2460,12 +2680,18 @@ class FanfouActivity : AppCompatActivity() {
             }
             toast("正在清除图片缓存")
         }.apply { top(10); horizontalGutter() })
-        body.addView(action("清除通知缓存") {
+        body.addView(action("清除通知与信息流缓存") {
             session.clearNotificationCache()
             notificationSnapshot = null
             notificationCacheLoaded = false
             notificationScrollY = 0
-            toast("已清除通知缓存")
+            homeCacheLoaded = false
+            homeItems = emptyList()
+            homeNextId = null
+            homeScrollY = 0
+            quoteContext.clear()
+            quoteFailed.clear()
+            toast("已清除通知与信息流缓存")
         }.apply { top(10); horizontalGutter() })
         body.addView(divider().apply { top(18) })
         body.addView(sectionHeader("应用"))
