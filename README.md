@@ -75,7 +75,7 @@
 
 ### 编译与安装
 
-- 2026-10-26：转发链展示改动在本机 `:androidApp:assembleDebug`、`:androidApp:assembleRelease` 和 `:androidApp:testDebugUnitTest`（71 项用例，0 失败）全部通过，既有弃用及 D8 Kotlin 元数据警告仍在。Debug `1.0.10-dev`（versionCode 1000010）安装到 `23127PN0CC` 后启动无崩溃，真实关注流中的多层转发按 `转自 @昵称` 加分隔线逐层显示；同一改动的分享图在三种样式下生成于 `androidApp/build/reports/content-block-shares/chain-*.png`，原图只绘制一次。随后手机无线调试断开，未再补做详情页与点击路径的设备复核。
+- 2026-10-26：转发链展示改动在本机 `:androidApp:assembleDebug`、`:androidApp:assembleRelease` 和 `:androidApp:testDebugUnitTest`（71 项用例，0 失败）全部通过，既有弃用及 D8 Kotlin 元数据警告仍在。Debug `1.0.10-dev`（versionCode 1000010）安装到 `23127PN0CC` 后启动无崩溃，真实关注流中的多层转发按 `转自 @昵称` 加分隔线逐层显示；同一改动的分享图在三种样式下生成于 `androidApp/build/reports/content-block-shares/chain-*.png`，原图只绘制一次。随后手机无线调试断开，未再补做详情页与点击路径的设备复核。推送到 `master` 后的 Android CI（run 40220257505）Debug 与未签名 Release 编译均通过，仅有既有的 Node.js 20 Action 弃用提示。
 - 2026-10-13：受保护主页修复后，`:androidApp:assembleDebug :androidApp:assembleDebugAndroidTest --offline --no-daemon` 通过，设备检查通过 13 项。最终 `installDebug` 的模拟器属性查询超时，改用 `adb install -r` 成功覆盖安装主应用和测试 APK；既有弃用及 D8 警告仍在。
 - 2026-10-13：`:androidApp:installDebug --offline --no-daemon` 编译并覆盖安装到 MuMu Android 12。`:androidApp:assembleDebugAndroidTest` 通过，原生解析测试通过六项用例，覆盖转义搜索高亮、网址连续性、链接偏移和非搜索正文边界。构建仍有既有的弃用及 D8 Kotlin 元数据警告。
 - 解析回归可在安装 Debug 主应用和 `androidApp/build/outputs/apk/androidTest/debug/androidApp-debug-androidTest.apk` 后运行 `adb shell am instrument -w com.example.qiafan.dev.test/com.example.qiafan.fanfou.FanfouTextInstrumentation`。成功输出为 `Text and follow response checks passed 13 cases.`。覆盖搜索高亮、规范提及链接及申请待确认响应的边界；普通 403、401 和 500 不会被当作申请成功。运行会重启测试进程，不清除登录数据。
