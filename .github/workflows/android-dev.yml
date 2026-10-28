@@ -1,0 +1,79 @@
+name: Android Dev APK
+
+on:
+  push:
+    branches: [dev]
+  pull_request:
+    branches: [dev]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-dev-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
+        with:
+          packages: 'platforms;android-34 build-tools;34.0.0'
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+      - name: Build debug APK
+        run: bash ./gradlew :androidApp:assembleDebug --no-daemon
+      - name: Verify and record artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dev-artifact
+          cp androidApp/build/outputs/apk/debug/androidApp-debug.apk dev-artifact/qiafan-dev.apk
+          "$ANDROID_HOME/build-tools/34.0.0/aapt" dump badging dev-artifact/qiafan-dev.apk > "$RUNNER_TEMP/dev-badging.txt"
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs dev-artifact/qiafan-dev.apk > "$RUNNER_TEMP/dev-signature.txt"
+          python3 - <<'PY'
+          import hashlib, json, os, re
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          apk = Path('dev-artifact/qiafan-dev.apk')
+          badging = (Path(os.environ['RUNNER_TEMP']) / 'dev-badging.txt').read_text()
+          signature = (Path(os.environ['RUNNER_TEMP']) / 'dev-signature.txt').read_text()
+          package = re.search(r"^package: name='([^']+)' versionCode='([^']+)' versionName='([^']+)'", badging, re.M)
+          activity = re.search(r"^launchable-activity: name='([^']+)'", badging, re.M)
+          signer = re.findall(r'Signer #\d+ certificate SHA-256 digest: ([0-9a-f]{64})', signature)
+          if not package or package[1] != 'com.example.qiafan.dev' or 'application-debuggable' not in badging:
+              raise SystemExit('Expected debuggable com.example.qiafan.dev APK')
+          if not activity or activity[1] != 'com.example.qiafan.fanfou.FanfouActivity' or len(signer) != 1:
+              raise SystemExit('Unexpected launch activity or signing certificate')
+          digest = hashlib.sha256(apk.read_bytes()).hexdigest()
+          (apk.parent / 'qiafan-dev.apk.sha256').write_text(f'{digest}  {apk.name}\n')
+          manifest = {
+              'commit': os.environ['GITHUB_SHA'],
+              'ref': os.environ['GITHUB_REF'],
+              'run_id': os.environ['GITHUB_RUN_ID'],
+              'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
+              'built_utc': datetime.now(timezone.utc).isoformat(),
+              'build_command': 'bash ./gradlew :androidApp:assembleDebug --no-daemon',
+              'package': package[1], 'version_code': package[2], 'version_name': package[3],
+              'activity': activity[1], 'native_code': re.findall(r'^native-code:.*$', badging, re.M),
+              'apk': apk.name, 'size': apk.stat().st_size, 'sha256': digest,
+              'signer_sha256': signer[0], 'signing': 'ephemeral runner debug key',
+          }
+          (apk.parent / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+          PY
+      - name: Upload dev APK and manifest
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: qiafan-dev-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dev-artifact/
+          if-no-files-found: error
+          retention-days: 7
