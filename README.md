@@ -14,6 +14,8 @@
 
 推送到 `dev` 时，`Android Dev APK` 工作流使用仓库 Actions secrets 中独立的 `ANDROID_CI_KEYSTORE_BASE64`、`ANDROID_CI_KEYSTORE_PASSWORD`、`ANDROID_CI_KEY_ALIAS` 和 `ANDROID_CI_KEY_PASSWORD` 构建固定签名的 `.ci` 包（`com.example.qiafan.ci`）。该 CI 测试签名与正式 Release 签名分开，推送构建可连续覆盖安装。dev 目标 PR 使用临时签名的 `.dev` debug 包；fork PR 不会获得仓库 secrets。构建产物含 APK、manifest 和 SHA-256，保留 7 天。该流程不发布正式 Release。
 
+dev push 的 artifact 名称为 `qiafan-ci-<run_id>-<run_attempt>`，包含 `qiafan-ci.apk`、`manifest.json` 和 `qiafan-ci.apk.sha256`，安装前用 manifest 核对 commit 和摘要。
+
 ## 本机构建与运行
 
 需要 JDK 17、Android SDK、可用的 Gradle 仓库，以及已连接并授权调试的 Android 设备。项目使用 Gradle 8.8、Android Gradle Plugin 8.5.2。一条命令完成 Debug 编译和安装：
