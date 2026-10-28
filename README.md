@@ -10,6 +10,10 @@
 
 2026-10-08 已完成正式签名配置和云端发布：[v1.0.1 的 Assets](https://github.com/hyperMoss/qiafan/releases/tag/v1.0.1) 提供 APK 与校验文件。已下载验证 SHA-256、正式签名证书、包名和版本；云端 Debug/Release 编译均通过。
 
+## dev 测试构建
+
+推送到 `dev` 或提交目标分支为 `dev` 的 PR 时，`Android Dev APK` 工作流会构建 debug APK。构建成功后，可在对应 GitHub Actions 运行的 Artifacts 中下载 `qiafan-dev-<run_id>-<run_attempt>`，内含 `qiafan-dev.apk`、`manifest.json` 和 SHA-256 校验文件 `qiafan-dev.apk.sha256`，保留 7 天。APK 使用 runner 临时 debug 签名，可能无法覆盖安装已有的不同签名应用；该流程不发布正式 Release。
+
 ## 本机构建与运行
 
 需要 JDK 17、Android SDK、可用的 Gradle 仓库，以及已连接并授权调试的 Android 设备。项目使用 Gradle 8.8、Android Gradle Plugin 8.5.2。一条命令完成 Debug 编译和安装：
