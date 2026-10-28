@@ -12,7 +12,7 @@
 
 ## dev 测试构建
 
-推送到 `dev` 或提交目标分支为 `dev` 的 PR 时，`Android Dev APK` 工作流会构建 debug APK。构建成功后，可在对应 GitHub Actions 运行的 Artifacts 中下载 `qiafan-dev-<run_id>-<run_attempt>`，内含 `qiafan-dev.apk`、`manifest.json` 和 SHA-256 校验文件 `qiafan-dev.apk.sha256`，保留 7 天。APK 使用 runner 临时 debug 签名，可能无法覆盖安装已有的不同签名应用；该流程不发布正式 Release。
+推送到 `dev` 时，`Android Dev APK` 工作流使用仓库 Actions secrets 中独立的 `ANDROID_CI_KEYSTORE_BASE64`、`ANDROID_CI_KEYSTORE_PASSWORD`、`ANDROID_CI_KEY_ALIAS` 和 `ANDROID_CI_KEY_PASSWORD` 构建固定签名的 `.ci` 包（`com.example.qiafan.ci`）。该 CI 测试签名与正式 Release 签名分开，推送构建可连续覆盖安装。dev 目标 PR 使用临时签名的 `.dev` debug 包；fork PR 不会获得仓库 secrets。构建产物含 APK、manifest 和 SHA-256，保留 7 天。该流程不发布正式 Release。
 
 ## 本机构建与运行
 
@@ -22,7 +22,7 @@
 ./install-debug.sh
 ```
 
-脚本调用 Gradle 的 `:androidApp:installDebug`，该任务会先构建 APK，再安装到设备。首次构建需能下载依赖；依赖已缓存时可用 `./install-debug.sh --offline`。Debug 包名是 `com.example.qiafan.dev`，可以与原有 `com.example.qiafan` 并排安装。正式包名仍为 `com.example.qiafan`。如需编译 iOS 目标，还需 Xcode 与 CocoaPods；Android 构建不依赖 iOS 运行环境。
+脚本调用 Gradle 的 `:androidApp:installDebug`，该任务会先构建 APK，再安装到设备。首次构建需能下载依赖；依赖已缓存时可用 `./install-debug.sh --offline`。Debug 包名是 `com.example.qiafan.dev`，可以与原有 `com.example.qiafan` 并排安装。云端 CI 测试包使用独立的 `com.example.qiafan.ci` 包名和固定测试证书，与 `.dev` 及正式包并排安装。正式包名仍为 `com.example.qiafan`。如需编译 iOS 目标，还需 Xcode 与 CocoaPods；Android 构建不依赖 iOS 运行环境。
 
 ### 无线安装到真机
 
