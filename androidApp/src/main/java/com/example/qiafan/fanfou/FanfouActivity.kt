@@ -1031,9 +1031,8 @@ class FanfouActivity : AppCompatActivity() {
         val url = status.originalPhoto ?: status.photo ?: return
         val overlay = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
         root.addView(overlay, FrameLayout.LayoutParams(-1, -1))
-        val photo = ImageView(this).apply {
-            scaleType = ImageView.ScaleType.FIT_CENTER
-            contentDescription = "${status.user.name}的图片，点按关闭预览"
+        val photo = ZoomableImageView(this).apply {
+            contentDescription = "${status.user.name}的图片，双击缩放，点按关闭预览"
             setPadding(dp(8), dp(56), dp(8), dp(72))
             setOnClickListener { root.removeView(overlay) }
         }
