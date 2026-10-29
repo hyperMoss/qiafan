@@ -22,6 +22,13 @@ require(hasSigning || signingValues.values.all { it.isNullOrBlank() }) { "正式
 require(providers.environmentVariable("REQUIRE_RELEASE_SIGNING").orNull != "true" || hasSigning) {
     "正式发布必须配置 Android 签名"
 }
+val ciSigningNames = listOf("ANDROID_CI_KEYSTORE_PATH", "ANDROID_CI_KEYSTORE_PASSWORD", "ANDROID_CI_KEY_ALIAS", "ANDROID_CI_KEY_PASSWORD")
+val ciSigningValues = ciSigningNames.associateWith { providers.environmentVariable(it).orNull }
+val hasCiSigning = ciSigningValues.values.all { !it.isNullOrBlank() }
+require(hasCiSigning || ciSigningValues.values.all { it.isNullOrBlank() }) { "CI 测试签名配置不完整" }
+require(hasCiSigning || gradle.startParameter.taskNames.none { it.contains("assembleCi", ignoreCase = true) }) {
+    "assembleCi 必须配置独立的 CI 测试签名"
+}
 
 android {
     namespace = "com.example.qiafan"
@@ -43,6 +50,12 @@ android {
         keyAlias = signingValues.getValue("ANDROID_KEY_ALIAS")
         keyPassword = signingValues.getValue("ANDROID_KEY_PASSWORD")
     }
+    if (hasCiSigning) signingConfigs.create("ciTest") {
+        storeFile = file(ciSigningValues.getValue("ANDROID_CI_KEYSTORE_PATH")!!)
+        storePassword = ciSigningValues.getValue("ANDROID_CI_KEYSTORE_PASSWORD")
+        keyAlias = ciSigningValues.getValue("ANDROID_CI_KEY_ALIAS")
+        keyPassword = ciSigningValues.getValue("ANDROID_CI_KEY_PASSWORD")
+    }
 
     buildTypes {
         getByName("debug") {
@@ -52,6 +65,14 @@ android {
         getByName("release") {
             isMinifyEnabled = false
             if (hasSigning) signingConfig = signingConfigs.getByName("release")
+        }
+        create("ci") {
+            initWith(getByName("debug"))
+            applicationIdSuffix = ".ci"
+            versionNameSuffix = "-ci"
+            matchingFallbacks += listOf("debug")
+            isDebuggable = true
+            if (hasCiSigning) signingConfig = signingConfigs.getByName("ciTest")
         }
     }
     compileOptions {

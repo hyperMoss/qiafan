@@ -1,108 +1,122 @@
-# 恰饭
+<div align="center">
+  <img src="docs/assets/icon.svg" width="96" height="96" alt="恰饭应用图标" />
+  <h1>恰饭</h1>
+  <p>一个以文字阅读为主的饭否 Android 客户端。</p>
+  <p>简洁的信息流，完整的转发链，随手保存与分享。</p>
+  <p>
+    <a href="https://github.com/hyperMoss/qiafan/releases/latest"><img src="https://img.shields.io/github/v/release/hyperMoss/qiafan?label=release&amp;color=0077B5" alt="最新版本" /></a>
+    <a href="https://github.com/hyperMoss/qiafan/actions/workflows/android-ci.yml"><img src="https://github.com/hyperMoss/qiafan/actions/workflows/android-ci.yml/badge.svg?branch=master" alt="Android CI" /></a>
+    <img src="https://img.shields.io/badge/Android-6.0%2B-3DDC84?logo=android&amp;logoColor=white" alt="支持 Android 6.0 及以上" />
+  </p>
+  <p>
+    <a href="https://github.com/hyperMoss/qiafan/releases/latest">下载最新版</a> ·
+    <a href="docs/usage.md">使用说明</a> ·
+    <a href="docs/android-development.md">开发指南</a> ·
+    <a href="https://github.com/hyperMoss/qiafan/issues">反馈问题</a>
+  </p>
+</div>
 
-一个以文字阅读为主的饭否 Android 客户端。Android 界面参考「恰饭-KMP-原型方案」的纸白底色、衬线标题、发丝分隔信息流和固定底部导航；仍使用项目约定的关注、通知、热门三个一级入口。现有 Kuikly 多平台工程保留；iOS、鸿蒙和 Web 尚未接入这套客户端界面。
+## 功能
 
-## GitHub 自动发布
+- 阅读关注动态，下拉刷新、自动分页，返回列表时恢复滚动位置。
+- 查看提及、私信和关注请求，浏览公开动态，搜索动态与用户。
+- 浏览用户主页、收藏和本机历史，访问有权查看的受保护内容。
+- 发布文字动态、回复、转发与一键快转，保留多层转发中的评论和署名。
+- 查看与保存单张原图，将动态生成便笺、极简或深色样式的分享图片。
+- 选择和复制正文，打开正文中的用户提及与网页链接。
 
-完成测试并提交功能代码后，在干净的 `master` 工作区运行 `./release.sh 1.0.3`，即可更新版本、打标签、推送并等待 GitHub Actions 发布。脚本确认对应 Release 的 Assets 中有非空 APK 和 SHA-256 校验文件后才报告完成。可用 `--dry-run` 预演、`--resume` 继续、`--retry` 重跑失败的工作流。版本、签名 Secrets 和完整步骤见 [Android 自动发布说明](docs/android-release.md)。正式签名配置完成前，工作流会停止发布。
+当前客户端以 Android 为验收平台。仓库保留 Kotlin Multiplatform 与 Kuikly 工程，iOS、鸿蒙和 Web 尚未接入这套饭否客户端。
 
-在本机 `.release-site-path` 配置官网目录后，APK 发布成功会自动调用官网 `deploy.sh`，传入本次版本并完成本机版本、二维码及构建准备；WorkBuddy 线上发布仍需另行完成。可用 `--no-site` 跳过。官网运行时读取 GitHub 最新 Release 的方案见发布说明。
+## 下载与安装
 
-2026-10-08 已完成正式签名配置和云端发布：[v1.0.1 的 Assets](https://github.com/hyperMoss/qiafan/releases/tag/v1.0.1) 提供 APK 与校验文件。已下载验证 SHA-256、正式签名证书、包名和版本；云端 Debug/Release 编译均通过。
+1. 打开 [最新 Release](https://github.com/hyperMoss/qiafan/releases/latest)。
+2. 在 **Assets** 中下载 `qiafan-v版本号.apk`，在 Android 设备上安装。
+3. 打开恰饭，使用饭否用户名或邮箱和密码登录。
+
+## dev 测试构建
+
+推送到 `dev` 时，`Android Dev APK` 工作流使用仓库 Actions secrets 中独立的 `ANDROID_CI_KEYSTORE_BASE64`、`ANDROID_CI_KEYSTORE_PASSWORD`、`ANDROID_CI_KEY_ALIAS` 和 `ANDROID_CI_KEY_PASSWORD` 构建固定签名的 `.ci` 包（`com.example.qiafan.ci`）。该 CI 测试签名与正式 Release 签名分开，推送构建可连续覆盖安装。dev 目标 PR 使用临时签名的 `.dev` debug 包；fork PR 不会获得仓库 secrets。构建产物含 APK、manifest 和 SHA-256，保留 7 天。该流程不发布正式 Release。
+
+dev push 的 artifact 名称为 `qiafan-ci-<run_id>-<run_attempt>`，包含 `qiafan-ci.apk`、`manifest.json` 和 `qiafan-ci.apk.sha256`，安装前用 manifest 核对 commit 和摘要。
 
 ## 本机构建与运行
+支持 Android 6.0 及以上。Release 同时提供 `.apk.sha256` 校验文件；历史版本与更新说明见 [Releases](https://github.com/hyperMoss/qiafan/releases)。
 
-需要 JDK 17、Android SDK、可用的 Gradle 仓库，以及已连接并授权调试的 Android 设备。项目使用 Gradle 8.8、Android Gradle Plugin 8.5.2。一条命令完成 Debug 编译和安装：
+正式版包名为 `com.example.qiafan`，开发版为 `com.example.qiafan.dev`，两者可以并存。更新正式版时，安装新 APK 即可覆盖升级。
+
+## 登录与本机数据
+
+密码仅用于通过 HTTPS 换取访问令牌，不保存在本机。令牌使用 Android Keystore 加密存储；浏览历史和最近搜索保存在设备上，可手动清除。设置中还提供图片缓存及通知与信息流缓存的清除入口。
+
+登录使用 nofan 的公开应用凭据，其可用性取决于饭否服务与应用授权状态。认证方式、接口限制与使用细节见 [使用说明](docs/usage.md)。
+
+## 本地开发
+
+准备 JDK 17、Android SDK Platform 34 和 Build Tools 34.0.0。项目使用 Kotlin 2.1.21、Gradle 8.8 和 Android Gradle Plugin 8.5.2，Gradle 通过仓库自带的 Wrapper 运行。
+
+获取源码：
+
+```sh
+git clone https://github.com/hyperMoss/qiafan.git
+cd qiafan
+```
+
+通过 Android Studio 打开项目并配置 SDK，或在仓库根目录的 `local.properties` 中设置 `sdk.dir`，再构建 Debug APK：
+
+```sh
+./gradlew :androidApp:assembleDebug
+```
+
+首次构建需要下载依赖；Debug APK 输出到 `androidApp/build/outputs/apk/debug/androidApp-debug.apk`。
+
+连接已授权调试的 Android 设备后，可编译并安装：
 
 ```sh
 ./install-debug.sh
 ```
 
-脚本调用 Gradle 的 `:androidApp:installDebug`，该任务会先构建 APK，再安装到设备。首次构建需能下载依赖；依赖已缓存时可用 `./install-debug.sh --offline`。Debug 包名是 `com.example.qiafan.dev`，可以与原有 `com.example.qiafan` 并排安装。正式包名仍为 `com.example.qiafan`。如需编译 iOS 目标，还需 Xcode 与 CocoaPods；Android 构建不依赖 iOS 运行环境。
+脚本调用 Gradle 的 `:androidApp:installDebug`，该任务会先构建 APK，再安装到设备。首次构建需能下载依赖；依赖已缓存时可用 `./install-debug.sh --offline`。Debug 包名是 `com.example.qiafan.dev`，可以与原有 `com.example.qiafan` 并排安装。云端 CI 测试包使用独立的 `com.example.qiafan.ci` 包名和固定测试证书，与 `.dev` 及正式包并排安装。正式包名仍为 `com.example.qiafan`。如需编译 iOS 目标，还需 Xcode 与 CocoaPods；Android 构建不依赖 iOS 运行环境。
 
 ### 无线安装到真机
 
 手机与电脑连接同一 Wi-Fi，在手机开发者选项中开启无线调试。已配对的手机可直接运行：
+运行单元测试与 Release lint：
 
 ```sh
-./install-wireless.sh
+./gradlew :androidApp:testDebugUnitTest :androidApp:lintRelease
 ```
 
-首次使用时，在手机打开“使用配对码配对设备”，保持弹窗打开，并将下方地址替换为弹窗显示的配对地址。脚本会提示输入六位配对码：
+离线构建、无线安装和设备检查见 [Android 开发指南](docs/android-development.md)。
 
-```sh
-./install-wireless.sh --pair 手机IP:配对端口
-```
+## 项目结构
 
-如果未自动发现已配对的手机，使用无线调试主页面的连接端口：
+| 路径 | 用途 |
+| --- | --- |
+| `androidApp/src/main/java/com/example/qiafan/fanfou/` | Android 界面、饭否 API、会话存储与图片处理 |
+| `androidApp/src/test/`、`androidApp/src/androidTest/` | 单元测试与设备检查 |
+| `shared/` | Kuikly 共享工程，当前饭否客户端逻辑尚未迁入 |
+| `iosApp/`、`ohosApp/`、`static_server/` | 原有平台壳与辅助目录 |
+| `docs/` | 使用、开发、发布与验证文档 |
 
-```sh
-./install-wireless.sh --connect 手机IP:连接端口
-```
+## 文档
 
-也可以安装已有 APK 或指定设备：
+- [使用说明](docs/usage.md)：界面操作、登录方式与功能限制。
+- [Android 开发指南](docs/android-development.md)：环境、构建、安装和检查命令。
+- [Android 自动发布](docs/android-release.md)：版本管理、正式签名与 GitHub Release。
+- [验证记录](docs/verification.md)：构建、测试、真实接口联调与设备验收结果。
 
-```sh
-./install-wireless.sh --apk androidApp/build/outputs/apk/debug/androidApp-debug.apk
-./install-wireless.sh --device 设备序列号 -- --offline
-```
+## 反馈与贡献
 
-配对端口和连接端口分别取自配对弹窗与无线调试主页面。脚本不保存配对码或手机地址。发现多台无线设备时，必须指定目标。默认只安装到选中的一台设备，测试版与正式版并存。
+通过 [Issues](https://github.com/hyperMoss/qiafan/issues) 报告问题或提出建议。报告问题时，附上应用版本、Android 版本、复现步骤和预期结果；分享截图与日志前，请移除密码、令牌和私信等个人信息。
 
-遇到旧 ADB 服务异常时，可添加 `--restart-adb` 后重试。这个选项会断开电脑当前的所有 ADB 调试连接，脚本默认不重启服务。出现安装确认弹窗时，在手机上允许安装。
+提交改动前阅读 [开发约定](AGENTS.md)，运行相关检查，并在 Pull Request 中说明修改内容与验证方式。
 
-## 登录
+## 致谢
 
-打开应用后输入饭否用户名（或邮箱）和密码。客户端按 [nofan 的登录实现](https://github.com/fanfoujs/nofan/blob/main/source/nofan.ts)使用 xAuth，并使用其[公开的 Consumer Key/Secret](https://github.com/fanfoujs/nofan/blob/main/source/util.ts)向饭否换取 Access Token。密码只用于这次 HTTPS 请求，不写入本地存储；Token 使用 Android Keystore 加密保存在设备上。退出登录会清除会话、浏览历史和本机最近搜索。旧版手动输入 Consumer Key 和 PIN 的会话需要重新登录。
+- [Kuikly](https://github.com/Tencent-TDS/KuiklyUI)：项目的多平台工程基础。
+- [FanfouAPI](https://github.com/FanfouAPI/FanFouAPIDoc)：饭否 API 文档。
+- [nofan](https://github.com/fanfoujs/nofan)：xAuth 登录实现参考与公开应用凭据。
 
-公开的 Consumer Secret 会包含在安装包中，无法当作私密凭据使用；其有效性取决于饭否与 nofan 应用的当前状态。饭否 [API 文档](https://github.com/FanfouAPI/FanFouAPIDoc/wiki/Apicategory)较旧，部分示例使用 HTTP。客户端仅通过 HTTPS 传输，按 nofan 的兼容方式使用 HTTP 地址计算 OAuth 签名，不会将密码或令牌通过明文 HTTP 发送。仓库不包含联调账号或令牌；本轮真实接口验证使用 Android 设备上已有的授权会话，未重新执行 xAuth 登录。服务端报错会直接显示。
+## 许可证
 
-## 使用范围
-
-- 主入口：关注、通知、热门。热门可在设置中关闭，关闭后不请求热门接口。
-- 左侧导航：当前账号头像与首位的个人主页入口，其后是搜索、浏览历史、收藏和设置。侧栏覆盖头栏、底栏和发布按钮。搜索可选全站动态、用户、指定用户内。
-- 用户资料页：点击作者或正文提及后，先读取真实用户资料，显示头像、昵称和签名；不显示资料页子标签。未关注的受保护用户显示关注锁和“申请关注”，获准后才能读取动态。申请提交后弹出等待通过提示，本次会话显示“已申请”并防止重复点击，不把申请状态当作已关注。
-- 热门页：顶部可搜索动态或话题并查看本机最近搜索；子页包括热门话题与“随便看看”公开动态。
-- 动态列表：首次进入关注页显示铺满可视区域的卡片骨架和小浮层；切换标签或从详情返回时立即恢复本次会话已加载的动态和滚动位置，不重复请求；下拉刷新或双击当前的“关注”入口时保留已有内容并刷新，滚动到底自动分页。关注页向下浏览时，顶栏向上、底栏和圆形发布按钮向下滑出；反向滚动或回到顶部时恢复。通知、搜索及用户时间线使用同一套位移动画，主标签底栏随顶栏一起收起。工具条不切换可见性或透明度，正文视口及内边距保持固定。列表图片按比例预览，点图片查看原图；点动态进入整页详情，点作者进入用户资料页。列表底部不显示操作按钮，可点右上角“更多”或长按打开操作菜单；自己发布的动态才显示删除，二次确认并由服务端成功后才从当前列表和会话缓存移除；详情页保留收藏、快转按钮。
-- 通知：按提及、私信和关注请求分栏显示。未读数来自通知计数接口，列表各自从对应接口加载。私信页只展示已取得的收件箱内容，并可尝试发送文本私信；不把它冒充完整的服务端会话历史。
-- 发布与评论：关注页右下角可发布最多 140 字的纯文本动态。动态详情页底部可写评论：客户端自动在正文前添加 `@原作者昵称 `（缺少昵称时使用账号 ID），回复关系仍用真实 ID 提交 `in_reply_to_status_id`、`in_reply_to_user_id`；这段前缀计入 140 字上限。评论与快转分别使用回复参数和 `repost_status_id`，不会把评论误发成快转。发送失败会恢复原文并显示原因。评论列表通过动态上下文接口读取当前账号可见的真实回复；每条评论会带上原动态的作者、时间、完整正文和图片，点按可打开原动态，正文中的 `@用户` 可进入对应主页。无法读取时显示服务端错误，不补造内容。图片发布尚未接入。
-- 原图：可从单条动态卡片或图片查看器保存该张原图到系统“图片/恰饭”；批量保存入口已移除。
-- 正文提及与转发：列表和详情正文中的 `@用户` 统一高亮。“更多”/长按菜单和详情操作栏提供独立的“转发”入口，参考 xifan 打开预填 `转@原作者昵称 原动态正文` 的编辑页，光标在开头，可添加自己的话；发送时提交 `repost_status_id`。一键快转保留。超过 140 字时完整保留草稿，用户调整后才能发送，不自动截断原文；发送失败保留编辑内容并恢复操作。转发链按 `转@昵称` 分段展示，保留每一层评论与分隔线；接口的转发 ID 指向最初原文时，只在引用区域把该原文还原成引用卡，不覆盖中间评论。引用卡已经带出的同一张原图不会在卡片下方重复展示。
-- 正文选择与网页：详情、评论及原动态正文支持系统文本选择和复制，列表保留长按操作菜单。网页链接高亮，点击使用 Android 系统 WebView；右上角“浏览器”可打开当前地址。内置网页保持 HTTPS 传输，HTTP 链接尝试升级 HTTPS，网站不支持时显示真实错误，不绕过证书检查；外部浏览器保留原始 HTTP 地址。搜索关键词显示加粗，安全解析搜索接口的 `strong` 和 `em` 标记。
-- 进入详情直接显示已加载正文，后台更新时不显示加载动画。通知和热门读取时保留小进度图标，隐藏读取提示文字。
-
-## 验证状态
-
-### 编译与安装
-
-- 2026-10-26：转发链展示改动在本机 `:androidApp:assembleDebug`、`:androidApp:assembleRelease` 和 `:androidApp:testDebugUnitTest`（71 项用例，0 失败）全部通过，既有弃用及 D8 Kotlin 元数据警告仍在。Debug `1.0.10-dev`（versionCode 1000010）安装到 `23127PN0CC` 后启动无崩溃，真实关注流中的多层转发按 `转自 @昵称` 加分隔线逐层显示；同一改动的分享图在三种样式下生成于 `androidApp/build/reports/content-block-shares/chain-*.png`，原图只绘制一次。随后手机无线调试断开，未再补做详情页与点击路径的设备复核。推送到 `master` 后的 Android CI（run 40220257505）Debug 与未签名 Release 编译均通过，仅有既有的 Node.js 20 Action 弃用提示。
-- 2026-10-13：受保护主页修复后，`:androidApp:assembleDebug :androidApp:assembleDebugAndroidTest --offline --no-daemon` 通过，设备检查通过 13 项。最终 `installDebug` 的模拟器属性查询超时，改用 `adb install -r` 成功覆盖安装主应用和测试 APK；既有弃用及 D8 警告仍在。
-- 2026-10-13：`:androidApp:installDebug --offline --no-daemon` 编译并覆盖安装到 MuMu Android 12。`:androidApp:assembleDebugAndroidTest` 通过，原生解析测试通过六项用例，覆盖转义搜索高亮、网址连续性、链接偏移和非搜索正文边界。构建仍有既有的弃用及 D8 Kotlin 元数据警告。
-- 解析回归可在安装 Debug 主应用和 `androidApp/build/outputs/apk/androidTest/debug/androidApp-debug-androidTest.apk` 后运行 `adb shell am instrument -w com.example.qiafan.dev.test/com.example.qiafan.fanfou.FanfouTextInstrumentation`。成功输出为 `Text and follow response checks passed 13 cases.`。覆盖搜索高亮、规范提及链接及申请待确认响应的边界；普通 403、401 和 500 不会被当作申请成功。运行会重启测试进程，不清除登录数据。
-- 2026-10-08：`./install-debug.sh --offline` 编译并安装成功（模拟器及已连接的 Android 12 设备），覆盖正文提及高亮及转发原文改动；构建仍有既有的弃用和 D8 Kotlin 元数据警告。
-- 2026-10-05：`./gradlew :androidApp:compileDebugKotlin --offline --no-daemon` 编译通过。
-- 2026-10-05：`./install-debug.sh --offline` 执行成功，Debug APK 位于 `androidApp/build/outputs/apk/debug/androidApp-debug.apk`，已安装到 Android 12 模拟器。
-
-### 真实饭否联调
-
-- 2026-10-13：设备已有会话读取 HTML 格式正文，`@LeeMay` 的真实主页链接指向 `miao.l`；`users/show` 返回昵称 LeeMay、头像、14 字签名、`protected=true`、`following=false`。请求申请关注后，服务端返回“已向 LeeMay 发出关注请求，请等待确认。”，客户端将这条明确的待确认响应识别为申请状态；其他错误仍显示失败。未把等待通过当作已关注。
-- 2026-10-13：设备已有会话读取 `http` 搜索结果，关键词加粗且网页地址保持完整；打开真实动态后，正文网页链接和 `@砂音色` 主页跳转通过。未发布、转发或删除动态。
-- 2026-10-08：通过设备已有会话读取真实提及并打开用户主页；本轮没有发送转发，转发写入服务端及超长草稿编辑流程尚未设备验收。
-- 使用设备上已有的授权会话，从“通知 / @我的”打开一条确实带有回复关系的提及，再通过“查看原动态”打开 `@amouse` 的真实原动态。
-- 上下文接口在该原动态下返回 5 条当前账号可见的真实回复；另一条回复动态返回 0 条评论。
-- 本轮未重新执行 xAuth 登录，也未发送评论或删除动态；这些线上成功响应仍未验收。
-
-### 设备目视验收
-
-- 2026-10-13：MuMu Android 12 从真实搜索结果的 `@LeeMay` 打开 `@miao.l` 主页，正确显示头像、昵称、完整签名及关注锁。点击“申请关注”后出现“关注申请已发送 / 已发送关注申请，等待对方通过”弹窗；关闭后按钮显示禁用的“已申请”，再次点击无新弹窗，返回并重新打开主页仍显示“已申请”，内容保持锁定。验收期间模拟器时间曾比服务器慢约 46 分钟，产生 `Expired timestamp`，同步时钟后接口恢复。对方尚未批准，批准后的内容读取未验收；首次申请的正常 200 响应、跨账号切换及提交中返回重开的并发路径尚未设备验收。
-- 2026-10-13：工具条仅使用位移后，Debug 编译安装通过。MuMu 的关注页已验证顶栏、底栏和发布按钮滑出及反向恢复；通知页已验证顶栏、底栏收起与恢复，详情返回和侧栏覆盖正常。源码已删除工具条的 `GONE`/`INVISIBLE` 切换及显隐引发的滚动补偿。未测量帧率或覆盖所有消息页，不把该结果当作其他渲染卡顿已消除的证明。
-- 2026-10-13：MuMu Android 12 真实详情长按出现原生选区手柄及“复制、分享、全选”浮条，复制的片段可粘贴到输入框，验收草稿已清除且未发送。正文网址可打开 WebView，右上角“浏览器”已跳转系统浏览器。`solidot.org` 网页内容加载成功；另一个 HTTP 链接升级 HTTPS 后返回 `ERR_CONNECTION_CLOSED`，内置页面正确显示错误与重试。详情无加载浮层，通知读取浮层无提示文字，热门空状态正常；侧栏覆盖头栏、底栏及发布按钮，刷新入口已移除。
-- 2026-10-13：验收期间模拟器中的应用两次处于 `TN` 暂停状态，ANR 记录显示线程停在 `do_signal_stop`；恢复进程后完成文本选择验收。本轮未重测非空评论选区、所有网页重定向、网页历史返回及所有设备尺寸。
-- 2026-10-08：模拟器真实提及列表中多个中文 `@昵称` 正确显示蓝色；点击非链接正文能打开动态详情，点击正文中的 `@鸭泪锅` 能进入 `@wocalage` 主页。正文长按和完整转发发送流程尚未验收。
-- 2026-10-08：补充独立“转发”入口后重新编译安装成功；模拟器已从“更多”菜单点击“转发”，确认编辑页预填原作者和完整转发链正文，并显示字数及“转发”按钮。未点击发送，线上发布结果与失败恢复仍未验收。
-- 2026-10-08：评论前缀改为昵称后编译安装成功；模拟器确认评论栏显示“回复 @一勺甜酒酿”，按该昵称前缀扣除 7 字，剩余 133 字。未发送评论，昵称前缀下服务端是否保留回复关系仍待线上验收。
-- 2026-10-08：关注页工具栏改为 220 毫秒位移与透明度动画后编译安装成功；模拟器确认圆形发布按钮，向下浏览后顶栏、底栏及发布按钮隐藏，反向滚动后恢复。截图验证了隐藏/恢复结果，未逐帧测量动画流畅度。
-- 真实非空评论页：评论下方的原动态卡片正确显示作者、头像、时间、完整正文和图片；点击“查看详情”会重新打开该原动态详情。
-- 评论正文中的蓝色 `@一只特立独行的耗子` 可点击，已进入正确的 `@amouse` 受保护用户主页。
-- 0 条评论页正确显示“评论 0 条”和“还没有评论”，无空白占位或布局回归。
-- 2026-10-03 已验证热门页两个子页、公开动态读取、最近搜索清除、上滑隐藏与下滑恢复顶栏、头像与正文图片、资料页签名及侧边栏顺序；热门话题列表当时返回空结果。
+仓库目前尚未声明项目许可证。
