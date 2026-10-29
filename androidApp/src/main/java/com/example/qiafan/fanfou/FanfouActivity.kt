@@ -398,31 +398,51 @@ class FanfouActivity : AppCompatActivity() {
         shellHost.addView(page, FrameLayout.LayoutParams(-1, -1))
         val contentWidth = dp(minOf(720, resources.configuration.screenWidthDp))
         val barWrap = FrameLayout(this).apply {
-            setBackgroundColor(Color.WHITE)
-            elevation = dp(1).toFloat()
+            if (!tabs) {
+                setBackgroundColor(Color.WHITE)
+                elevation = dp(1).toFloat()
+            }
         }
-        shellHost.addView(barWrap, FrameLayout.LayoutParams(-1, dp(57), Gravity.TOP))
+        shellHost.addView(barWrap, FrameLayout.LayoutParams(-1, dp(if (tabs) 68 else 57), Gravity.TOP))
         val bar = row().apply {
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(12), 0, dp(12), 0)
-            setBackgroundColor(Color.WHITE)
+            if (!tabs) setBackgroundColor(Color.WHITE)
         }
-        barWrap.addView(bar, FrameLayout.LayoutParams(contentWidth, dp(56), Gravity.CENTER))
-        if (tabs) bar.addView(avatarFrame(currentUser, 44).apply {
-            navAvatarFrame = this
-            contentDescription = "打开导航栏"
-            setOnClickListener { drawer() }
-        }, LinearLayout.LayoutParams(dp(44), dp(44)))
-        else bar.addView(icon("‹") {
-            onBackPressed()
-        })
-        val heading = label(title, 21, ink, true).apply {
-            typeface = Typeface.create("serif", Typeface.BOLD)
-            setPadding(dp(10), 0, 0, 0)
+        barWrap.addView(bar, FrameLayout.LayoutParams(contentWidth, dp(if (tabs) 68 else 56), Gravity.CENTER))
+        if (tabs) {
+            val avatar = avatarFrame(currentUser, 44).apply {
+                navAvatarFrame = this
+                contentDescription = "打开导航栏"
+                setOnClickListener { drawer() }
+            }
+            val avatarGlass = FrameLayout(this).apply {
+                background = glassBackground(25)
+                elevation = dp(5).toFloat()
+                addView(avatar, FrameLayout.LayoutParams(dp(44), dp(44), Gravity.CENTER))
+            }
+            bar.addView(avatarGlass, LinearLayout.LayoutParams(dp(50), dp(50)))
+            bar.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
+            val titleGlass = row().apply {
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(16), 0, dp(5), 0)
+                background = glassBackground(25)
+                elevation = dp(5).toFloat()
+            }
+            titleGlass.addView(label(title, 19, ink, true).apply {
+                typeface = Typeface.create("serif", Typeface.BOLD)
+                if (activeTab != "关注") setPadding(0, 0, dp(11), 0)
+            })
+            if (activeTab == "关注") titleGlass.addView(iconButton("search", "搜索动态与用户") { showSearch() })
+            bar.addView(titleGlass, LinearLayout.LayoutParams(-2, dp(50)))
+        } else {
+            bar.addView(icon("‹") { onBackPressed() })
+            bar.addView(label(title, 21, ink, true).apply {
+                typeface = Typeface.create("serif", Typeface.BOLD)
+                setPadding(dp(10), 0, 0, 0)
+            }, LinearLayout.LayoutParams(0, -2, 1f))
+            barWrap.addView(divider(), FrameLayout.LayoutParams(-1, dp(1), Gravity.BOTTOM))
         }
-        bar.addView(heading, LinearLayout.LayoutParams(0, -2, 1f))
-        if (tabs && activeTab == "关注") bar.addView(iconButton("search", "搜索动态与用户") { showSearch() })
-        barWrap.addView(divider(), FrameLayout.LayoutParams(-1, dp(1), Gravity.BOTTOM))
         header?.let {
             page.addView(it, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(57) })
         }
@@ -434,7 +454,7 @@ class FanfouActivity : AppCompatActivity() {
             isFillViewport = true
             overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
             setBackgroundColor(Color.WHITE)
-            setPadding(0, if (header == null) dp(57) else 0, 0, if (tabs) dp(100) else 0)
+            setPadding(0, if (header == null) dp(if (tabs) 68 else 57) else 0, 0, if (tabs) dp(88) else 0)
             clipToPadding = false
         }
         currentScroll = scroll
@@ -471,7 +491,7 @@ class FanfouActivity : AppCompatActivity() {
                 }
                 if (shouldHide != chromeHidden) {
                     chromeHidden = shouldHide
-                    animateChrome(barWrap, shouldHide, -dp(57).toFloat())
+                    animateChrome(barWrap, shouldHide, -dp(if (tabs) 68 else 57).toFloat())
                     animateChrome(navChrome, shouldHide, dp(96).toFloat())
                     animateChrome(composeChrome, shouldHide, dp(160).toFloat())
                     directionTravel = 0
@@ -502,18 +522,12 @@ class FanfouActivity : AppCompatActivity() {
                 setPadding(dp(6), dp(5), dp(6), dp(5))
             }
             val navWrap = FrameLayout(this).apply {
-                background = GradientDrawable(
-                    GradientDrawable.Orientation.TOP_BOTTOM,
-                    intArrayOf(0xF7FFFFFF.toInt(), 0xE8EEF5F8.toInt())
-                ).apply {
-                    cornerRadius = dp(34).toFloat()
-                    setStroke(dp(1), 0xEFFFFFFF.toInt())
-                }
+                background = glassBackground(28)
                 elevation = dp(10).toFloat()
             }
             navChrome = navWrap
-            val navWidth = dp(minOf(460, (resources.configuration.screenWidthDp - 32).coerceAtLeast(1)))
-            shellHost.addView(navWrap, FrameLayout.LayoutParams(navWidth, dp(68), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
+            val navWidth = dp(minOf(240, (resources.configuration.screenWidthDp - 32).coerceAtLeast(1)))
+            shellHost.addView(navWrap, FrameLayout.LayoutParams(navWidth, dp(56), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
                 bottomMargin = dp(14)
             })
             navWrap.addView(nav, FrameLayout.LayoutParams(-1, -1))
@@ -548,11 +562,6 @@ class FanfouActivity : AppCompatActivity() {
                 val iconFrame = FrameLayout(this)
                 item.addView(iconFrame, LinearLayout.LayoutParams(dp(54), dp(30)))
                 iconFrame.addView(icon, FrameLayout.LayoutParams(dp(24), dp(24), Gravity.CENTER))
-                val caption = label(name, 11, if (selected) accent else muted, selected).apply {
-                    gravity = Gravity.CENTER
-                    top(2)
-                }
-                item.addView(caption)
                 if (name == "通知") {
                     val count = unreadCounts?.let {
                         it.mentions + it.messages + it.requests
@@ -585,7 +594,7 @@ class FanfouActivity : AppCompatActivity() {
             composeChrome = compose
             content.addView(compose, FrameLayout.LayoutParams(dp(52), dp(52), Gravity.END or Gravity.BOTTOM).apply {
                 rightMargin = dp(((resources.configuration.screenWidthDp - 720).coerceAtLeast(0) / 2) + 18)
-                bottomMargin = dp(100)
+                bottomMargin = dp(88)
             })
         }
     }
@@ -3358,6 +3367,14 @@ class FanfouActivity : AppCompatActivity() {
             }
             canvas.restore()
         }
+    }
+
+    private fun glassBackground(radius: Int): GradientDrawable = GradientDrawable(
+        GradientDrawable.Orientation.TOP_BOTTOM,
+        intArrayOf(0xF7FFFFFF.toInt(), 0xE8EEF5F8.toInt())
+    ).apply {
+        cornerRadius = dp(radius).toFloat()
+        setStroke(dp(1), 0xEFFFFFFF.toInt())
     }
 
     private fun rounded(color: Int, radius: Int, stroke: Int? = null): GradientDrawable =
