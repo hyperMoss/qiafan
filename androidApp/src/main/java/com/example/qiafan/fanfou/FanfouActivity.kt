@@ -90,6 +90,7 @@ class FanfouActivity : AppCompatActivity() {
     private var homeScrollY = 0
     private var homeCacheLoaded = false
     private var lastFollowTabTapAt = 0L
+    private var resumedOnce = false
     private var busy = false
     private var showingTabs = false
     private var exploreItems: List<FanfouStatus> = emptyList()
@@ -176,6 +177,17 @@ class FanfouActivity : AppCompatActivity() {
         root = FrameLayout(this).apply { setBackgroundColor(Color.WHITE) }
         setContentView(root)
         if (session.credentials()?.token?.isNotBlank() == true) showTab("关注") else showLogin()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (resumedOnce && session.credentials()?.token?.isNotBlank() == true) {
+            refreshUnreadCounts()
+            if (showingTabs && activeTab == "关注" && items.isNotEmpty()) {
+                loadStatuses(reset = true, mergeFresh = true)
+            }
+        }
+        resumedOnce = true
     }
 
     override fun onDestroy() {
@@ -398,51 +410,41 @@ class FanfouActivity : AppCompatActivity() {
         shellHost.addView(page, FrameLayout.LayoutParams(-1, -1))
         val contentWidth = dp(minOf(720, resources.configuration.screenWidthDp))
         val barWrap = FrameLayout(this).apply {
-            if (!tabs) {
-                setBackgroundColor(Color.WHITE)
-                elevation = dp(1).toFloat()
-            }
+            setBackgroundColor(Color.WHITE)
+            elevation = dp(1).toFloat()
         }
-        shellHost.addView(barWrap, FrameLayout.LayoutParams(-1, dp(if (tabs) 68 else 57), Gravity.TOP))
+        shellHost.addView(barWrap, FrameLayout.LayoutParams(-1, dp(57), Gravity.TOP))
         val bar = row().apply {
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(12), 0, dp(12), 0)
-            if (!tabs) setBackgroundColor(Color.WHITE)
+            setBackgroundColor(Color.WHITE)
         }
-        barWrap.addView(bar, FrameLayout.LayoutParams(contentWidth, dp(if (tabs) 68 else 56), Gravity.CENTER))
+        barWrap.addView(bar, FrameLayout.LayoutParams(contentWidth, dp(56), Gravity.CENTER))
+        if (tabs) bar.addView(avatarFrame(currentUser, 44).apply {
+            navAvatarFrame = this
+            contentDescription = "打开导航栏"
+            setOnClickListener { drawer() }
+        }, LinearLayout.LayoutParams(dp(44), dp(44)))
+        else bar.addView(icon("‹") { onBackPressed() })
+        val heading = label(title, 21, ink, true).apply {
+            typeface = Typeface.create("serif", Typeface.BOLD)
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(10), 0, 0, 0)
+        }
         if (tabs) {
-            val avatar = avatarFrame(currentUser, 44).apply {
-                navAvatarFrame = this
-                contentDescription = "打开导航栏"
-                setOnClickListener { drawer() }
-            }
-            val avatarGlass = FrameLayout(this).apply {
-                background = glassBackground(25)
-                elevation = dp(5).toFloat()
-                addView(avatar, FrameLayout.LayoutParams(dp(44), dp(44), Gravity.CENTER))
-            }
-            bar.addView(avatarGlass, LinearLayout.LayoutParams(dp(50), dp(50)))
-            bar.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
-            val titleGlass = row().apply {
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(16), 0, dp(5), 0)
-                background = glassBackground(25)
-                elevation = dp(5).toFloat()
-            }
-            titleGlass.addView(label(title, 19, ink, true).apply {
-                typeface = Typeface.create("serif", Typeface.BOLD)
-                if (activeTab != "关注") setPadding(0, 0, dp(11), 0)
+            val topGestures = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+                override fun onDown(event: MotionEvent) = true
+                override fun onDoubleTap(event: MotionEvent): Boolean {
+                    currentScroll?.smoothScrollTo(0, 0)
+                    return true
+                }
             })
-            if (activeTab == "关注") titleGlass.addView(iconButton("search", "搜索动态与用户") { showSearch() })
-            bar.addView(titleGlass, LinearLayout.LayoutParams(-2, dp(50)))
-        } else {
-            bar.addView(icon("‹") { onBackPressed() })
-            bar.addView(label(title, 21, ink, true).apply {
-                typeface = Typeface.create("serif", Typeface.BOLD)
-                setPadding(dp(10), 0, 0, 0)
-            }, LinearLayout.LayoutParams(0, -2, 1f))
-            barWrap.addView(divider(), FrameLayout.LayoutParams(-1, dp(1), Gravity.BOTTOM))
+            heading.setOnTouchListener { _, event -> topGestures.onTouchEvent(event) }
+            heading.contentDescription = "$title，双击回到顶部"
         }
+        bar.addView(heading, LinearLayout.LayoutParams(0, -1, 1f))
+        if (tabs && activeTab == "关注") bar.addView(iconButton("search", "搜索动态与用户") { showSearch() })
+        barWrap.addView(divider(), FrameLayout.LayoutParams(-1, dp(1), Gravity.BOTTOM))
         header?.let {
             page.addView(it, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(57) })
         }
@@ -454,7 +456,7 @@ class FanfouActivity : AppCompatActivity() {
             isFillViewport = true
             overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
             setBackgroundColor(Color.WHITE)
-            setPadding(0, if (header == null) dp(if (tabs) 68 else 57) else 0, 0, if (tabs) dp(88) else 0)
+            setPadding(0, if (header == null) dp(57) else 0, 0, if (tabs) dp(88) else 0)
             clipToPadding = false
         }
         currentScroll = scroll
@@ -491,7 +493,7 @@ class FanfouActivity : AppCompatActivity() {
                 }
                 if (shouldHide != chromeHidden) {
                     chromeHidden = shouldHide
-                    animateChrome(barWrap, shouldHide, -dp(if (tabs) 68 else 57).toFloat())
+                    animateChrome(barWrap, shouldHide, -dp(57).toFloat())
                     animateChrome(navChrome, shouldHide, dp(96).toFloat())
                     animateChrome(composeChrome, shouldHide, dp(160).toFloat())
                     directionTravel = 0
