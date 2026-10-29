@@ -434,7 +434,7 @@ class FanfouActivity : AppCompatActivity() {
             isFillViewport = true
             overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
             setBackgroundColor(Color.WHITE)
-            setPadding(0, if (header == null) dp(57) else 0, 0, if (tabs) dp(65) else 0)
+            setPadding(0, if (header == null) dp(57) else 0, 0, if (tabs) dp(100) else 0)
             clipToPadding = false
         }
         currentScroll = scroll
@@ -472,8 +472,8 @@ class FanfouActivity : AppCompatActivity() {
                 if (shouldHide != chromeHidden) {
                     chromeHidden = shouldHide
                     animateChrome(barWrap, shouldHide, -dp(57).toFloat())
-                    animateChrome(navChrome, shouldHide, dp(65).toFloat())
-                    animateChrome(composeChrome, shouldHide, dp(142).toFloat())
+                    animateChrome(navChrome, shouldHide, dp(96).toFloat())
+                    animateChrome(composeChrome, shouldHide, dp(160).toFloat())
                     directionTravel = 0
                 }
             }
@@ -499,21 +499,29 @@ class FanfouActivity : AppCompatActivity() {
         if (tabs) {
             val nav = row().apply {
                 gravity = Gravity.CENTER_VERTICAL
-                setBackgroundColor(Color.WHITE)
-                setPadding(dp(10), 0, dp(10), 0)
+                setPadding(dp(6), dp(5), dp(6), dp(5))
             }
             val navWrap = FrameLayout(this).apply {
-                setBackgroundColor(Color.WHITE)
-                elevation = dp(1).toFloat()
+                background = GradientDrawable(
+                    GradientDrawable.Orientation.TOP_BOTTOM,
+                    intArrayOf(0xF7FFFFFF.toInt(), 0xE8EEF5F8.toInt())
+                ).apply {
+                    cornerRadius = dp(34).toFloat()
+                    setStroke(dp(1), 0xEFFFFFFF.toInt())
+                }
+                elevation = dp(10).toFloat()
             }
             navChrome = navWrap
-            shellHost.addView(navWrap, FrameLayout.LayoutParams(-1, dp(65), Gravity.BOTTOM))
-            navWrap.addView(divider(), FrameLayout.LayoutParams(-1, dp(1), Gravity.TOP))
-            navWrap.addView(nav, FrameLayout.LayoutParams(contentWidth, dp(64), Gravity.CENTER))
+            val navWidth = dp(minOf(460, (resources.configuration.screenWidthDp - 32).coerceAtLeast(1)))
+            shellHost.addView(navWrap, FrameLayout.LayoutParams(navWidth, dp(68), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
+                bottomMargin = dp(14)
+            })
+            navWrap.addView(nav, FrameLayout.LayoutParams(-1, -1))
             listOf("关注", "通知", "随便看看").filter { it != "随便看看" || session.showHot }.forEach { name ->
                 val selected = name == activeTab
                 val item = box().apply {
                     gravity = Gravity.CENTER
+                    if (selected) background = rounded(0x1A0077B5, 26)
                     contentDescription = name + if (selected) "，当前页面" else ""
                     isFocusable = true
                     setOnClickListener {
@@ -536,11 +544,11 @@ class FanfouActivity : AppCompatActivity() {
                     }
                 }
                 val symbol = when (name) { "关注" -> "home"; "通知" -> "bell"; else -> "trend" }
-                val icon = SymbolIcon(symbol, if (selected) ink else muted)
+                val icon = SymbolIcon(symbol, if (selected) accent else muted)
                 val iconFrame = FrameLayout(this)
                 item.addView(iconFrame, LinearLayout.LayoutParams(dp(54), dp(30)))
                 iconFrame.addView(icon, FrameLayout.LayoutParams(dp(24), dp(24), Gravity.CENTER))
-                val caption = label(name, 11, if (selected) ink else muted, selected).apply {
+                val caption = label(name, 11, if (selected) accent else muted, selected).apply {
                     gravity = Gravity.CENTER
                     top(2)
                 }
@@ -577,7 +585,7 @@ class FanfouActivity : AppCompatActivity() {
             composeChrome = compose
             content.addView(compose, FrameLayout.LayoutParams(dp(52), dp(52), Gravity.END or Gravity.BOTTOM).apply {
                 rightMargin = dp(((resources.configuration.screenWidthDp - 720).coerceAtLeast(0) / 2) + 18)
-                bottomMargin = dp(64 + 18)
+                bottomMargin = dp(100)
             })
         }
     }
