@@ -68,7 +68,8 @@ internal class StatusImageDialog(
     private lateinit var progress: ProgressBar
     private lateinit var retry: Button
     private lateinit var save: ImageButton
-    private lateinit var share: ImageButton
+    private lateinit var share: LinearLayout
+    private lateinit var shareFooter: LinearLayout
 
     private data class GeneratedImage(val bitmap: Bitmap, val replies: List<FanfouStatus>, val quotes: Map<String, FanfouStatus>)
 
@@ -104,9 +105,7 @@ internal class StatusImageDialog(
                 }
             }
         }
-        share = icon(R.drawable.ic_content_image_share, "分享") { shareImage() }
         header.addView(save)
-        header.addView(share)
         column.addView(header, LinearLayout.LayoutParams(-1, dp(52)))
 
         stage = FrameLayout(activity).apply { setBackgroundColor(paperBackground) }
@@ -151,6 +150,36 @@ internal class StatusImageDialog(
             setMargins(dp(18), dp(12), dp(18), 0)
         })
         column.addView(stage, LinearLayout.LayoutParams(-1, 0, 1f))
+        shareFooter = LinearLayout(activity).apply {
+            setPadding(dp(16), dp(10), dp(16), dp(16))
+            setBackgroundColor(paperBackground)
+        }
+        share = LinearLayout(activity).apply {
+            gravity = Gravity.CENTER
+            background = shareBackground()
+            contentDescription = "分享"
+            isFocusable = true
+            accessibilityDelegate = object : View.AccessibilityDelegate() {
+                override fun onInitializeAccessibilityNodeInfo(host: View, info: android.view.accessibility.AccessibilityNodeInfo) {
+                    super.onInitializeAccessibilityNodeInfo(host, info)
+                    info.className = Button::class.java.name
+                }
+            }
+            setOnClickListener { shareImage() }
+            addView(ImageView(activity).apply {
+                setImageResource(R.drawable.ic_content_image_share)
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            }, LinearLayout.LayoutParams(dp(24), dp(24)))
+            addView(TextView(activity).apply {
+                text = "分享"
+                textSize = 16f
+                setTextColor(Color.WHITE)
+                setPadding(dp(8), 0, 0, 0)
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            })
+        }
+        shareFooter.addView(share, LinearLayout.LayoutParams(-1, dp(48)))
+        column.addView(shareFooter, LinearLayout.LayoutParams(-1, -2))
         setContentView(column)
         setOnDismissListener {
             stylePicker?.dismiss()
@@ -275,6 +304,8 @@ internal class StatusImageDialog(
                         styleButton.contentDescription = "切换分享图片风格，当前${style.title}"
                         header.setBackgroundColor(toolbarColor)
                         stage.setBackgroundColor(paperBackground)
+                        shareFooter.setBackgroundColor(paperBackground)
+                        share.background = shareBackground()
                         window?.statusBarColor = toolbarColor
                         window?.navigationBarColor = paperBackground
                         if (Build.VERSION.SDK_INT >= 26) window?.decorView?.systemUiVisibility =
@@ -376,6 +407,11 @@ internal class StatusImageDialog(
         if (!worker.isShutdown) main.post {
             if (!closed && !activity.isFinishing && !activity.isDestroyed) block()
         }
+    }
+
+    private fun shareBackground() = GradientDrawable().apply {
+        setColor(toolbarColor)
+        cornerRadius = dp(8).toFloat()
     }
 
     private fun icon(drawable: Int, description: String, click: () -> Unit) = ImageButton(activity).apply {
