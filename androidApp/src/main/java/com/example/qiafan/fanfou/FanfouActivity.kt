@@ -149,6 +149,7 @@ class FanfouActivity : AppCompatActivity() {
     private var chatLog: LinearLayout? = null
     private val chatLines = mutableListOf<ChatLine>()
     private var currentPage: (() -> Unit)? = null
+    private var captureSearchPage: (() -> (() -> Unit)?)? = null
     private val backStack = ArrayDeque<() -> Unit>()
     private var restoringPage = false
 
@@ -213,7 +214,8 @@ class FanfouActivity : AppCompatActivity() {
 
     private fun enterPage(reopen: () -> Unit) {
         rememberHomeState()
-        if (!restoringPage) currentPage?.let { backStack.addLast(it) }
+        if (!restoringPage) (captureSearchPage?.invoke() ?: currentPage)?.let { backStack.addLast(it) }
+        captureSearchPage = null
         currentPage = reopen
     }
 
@@ -242,6 +244,7 @@ class FanfouActivity : AppCompatActivity() {
         navAvatarFrame = null
         drawerAvatarFrame = null
         currentPage = null
+        captureSearchPage = null
         backStack.clear()
         unreadCounts = null
         notificationSnapshot = null
@@ -346,6 +349,7 @@ class FanfouActivity : AppCompatActivity() {
     private fun showTab(tab: String) {
         if (tab == "随便看看" && !session.showHot) return
         rememberHomeState()
+        captureSearchPage = null
         backStack.clear()
         currentPage = { showTab(tab) }
         activeTab = tab
@@ -601,15 +605,23 @@ class FanfouActivity : AppCompatActivity() {
         }
     }
 
+    private data class SearchTimelineSnapshot(
+        val statuses: List<FanfouStatus>,
+        val nextId: String?,
+        val scrollY: Int
+    )
+
     private fun showTimeline(
         title: String,
         tabs: Boolean = false,
         cursorForNext: (List<FanfouStatus>, String?) -> String? =
             { received, _ -> received.lastOrNull()?.id },
         profile: FanfouUser? = null,
+        preserveSearch: Boolean = false,
+        restoredSearch: SearchTimelineSnapshot? = null,
         loader: (String?) -> List<FanfouStatus>
     ) {
-        if (!tabs) enterPage { showTimeline(title, tabs, cursorForNext, profile, loader) }
+        if (!tabs) enterPage { showTimeline(title, tabs, cursorForNext, profile, preserveSearch, restoredSearch, loader) }
         statusLoader = loader
         timelineProfile = profile
         nextCursor = cursorForNext
@@ -620,11 +632,25 @@ class FanfouActivity : AppCompatActivity() {
         if (restoreHome || restoreExplore) {
             items.addAll(if (restoreHome) homeItems else exploreItems)
             nextId = if (restoreHome) homeNextId else exploreNextId
+        } else if (restoredSearch != null) {
+            items.addAll(restoredSearch.statuses)
+            nextId = restoredSearch.nextId
         }
         busy = false
         shell(title, tabs)
+        if (preserveSearch) captureSearchPage = {
+            if (items.isEmpty()) null else {
+                val snapshot = SearchTimelineSnapshot(items.toList(), nextId, currentScroll?.scrollY ?: 0)
+                val restore: () -> Unit = { showTimeline(title, tabs, cursorForNext, profile, true, snapshot, loader) }
+                restore
+            }
+        }
         val turn = generation
         when {
+            restoredSearch != null -> {
+                renderStatuses(nextId != null)
+                currentScroll?.post { currentScroll?.scrollTo(0, restoredSearch.scrollY) }
+            }
             restoreHome || restoreExplore -> {
                 renderStatuses(nextId != null)
                 val savedY = if (restoreHome) homeScrollY else exploreScrollY
@@ -2054,7 +2080,7 @@ class FanfouActivity : AppCompatActivity() {
         val query = rawQuery.trim()
         if (query.isBlank()) return toast("请输入搜索词")
         session.rememberSearch(query)
-        showTimeline("搜索 · " + query) { api.publicSearch(query, it) }
+        showTimeline("搜索 · " + query, preserveSearch = true) { api.publicSearch(query, it) }
     }
 
     /**
@@ -2522,9 +2548,9 @@ class FanfouActivity : AppCompatActivity() {
             if (scope == "指定用户内" && id.isBlank()) return@action toast("请填写用户 ID")
             session.rememberSearch(q)
             when (scope) {
-                "全站动态" -> showTimeline("搜索 · " + q) { api.publicSearch(q, it) }
+                "全站动态" -> showTimeline("搜索 · " + q, preserveSearch = true) { api.publicSearch(q, it) }
                 "指定用户内" -> {
-                    showTimeline("@" + id + " 内搜索") { api.userSearch(id, q, it) }
+                    showTimeline("@" + id + " 内搜索", preserveSearch = true) { api.userSearch(id, q, it) }
                 }
                 else -> searchUsers(q)
             }
