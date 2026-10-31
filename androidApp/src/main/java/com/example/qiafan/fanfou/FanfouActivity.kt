@@ -88,7 +88,12 @@ class FanfouActivity : AppCompatActivity() {
     private var homeItems: List<FanfouStatus> = emptyList()
     private var homeNextId: String? = null
     private var homeScrollY = 0
+    private var homeScrollAnchor: TimelineAnchor? = null
     private var homeCacheLoaded = false
+    private var homeHasNewContent = false
+    private var homeNewContentHint: TextView? = null
+    private var homeRefreshPending = false
+    private var homeRefreshInFlight = false
     private var lastFollowTabTapAt = 0L
     private var resumedOnce = false
     private var busy = false
@@ -184,8 +189,12 @@ class FanfouActivity : AppCompatActivity() {
         super.onResume()
         if (resumedOnce && session.credentials()?.token?.isNotBlank() == true) {
             refreshUnreadCounts()
-            if (showingTabs && activeTab == "关注" && items.isNotEmpty()) {
-                loadStatuses(reset = true, mergeFresh = true)
+            if (showingTabs && activeTab == "关注") {
+                if (busy) homeRefreshPending = true
+                else if (items.isNotEmpty()) loadStatuses(reset = true, mergeFresh = true)
+                else loadStatuses(reset = true)
+            } else {
+                refreshHomeInBackground()
             }
         }
         resumedOnce = true
@@ -230,6 +239,7 @@ class FanfouActivity : AppCompatActivity() {
             homeItems = items.toList()
             homeNextId = nextId
             homeScrollY = currentScroll?.scrollY ?: 0
+            homeScrollAnchor = firstVisibleItemAnchor()
         }
     }
 
@@ -259,7 +269,12 @@ class FanfouActivity : AppCompatActivity() {
         homeItems = emptyList()
         homeNextId = null
         homeScrollY = 0
+        homeScrollAnchor = null
         homeCacheLoaded = false
+        homeHasNewContent = false
+        homeNewContentHint = null
+        homeRefreshPending = false
+        homeRefreshInFlight = false
         quoteContext.clear()
         quoteFailed.clear()
         quoteInFlight.clear()
@@ -407,6 +422,7 @@ class FanfouActivity : AppCompatActivity() {
         timelineFooter = null
         timelineCards.clear()
         showingTabs = tabs
+        homeNewContentHint = null
         root.removeAllViews()
         val shellHost = FrameLayout(this)
         root.addView(shellHost, FrameLayout.LayoutParams(-1, -1))
@@ -467,6 +483,22 @@ class FanfouActivity : AppCompatActivity() {
         body = box().apply { setPadding(0, 0, 0, dp(24)) }
         scroll.addView(body)
         content.addView(scroll, FrameLayout.LayoutParams(contentWidth, -1, Gravity.CENTER))
+        if (tabs && activeTab == "关注") {
+            homeNewContentHint = label("有新内容，点按查看", 13, Color.WHITE, true).apply {
+                gravity = Gravity.CENTER
+                setPadding(dp(16), 0, dp(16), 0)
+                background = rounded(accent, 20)
+                elevation = dp(6).toFloat()
+                visibility = if (homeHasNewContent) View.VISIBLE else View.GONE
+                setOnClickListener {
+                    currentScroll?.smoothScrollTo(0, 0)
+                    clearHomeNewContent()
+                }
+            }
+            content.addView(homeNewContentHint, FrameLayout.LayoutParams(-2, dp(36), Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
+                topMargin = dp(64)
+            })
+        }
         var previousY = 0
         var directionTravel = 0
         var chromeHidden = false
@@ -482,6 +514,7 @@ class FanfouActivity : AppCompatActivity() {
         }
         scroll.setOnScrollChangeListener { _, _, y, _, _ ->
             val dy = y - previousY
+            if (tabs && activeTab == "关注" && dy < 0 && y <= dp(8)) clearHomeNewContent()
             val containsMessages = statusLoader != null || (tabs && activeTab == "通知")
             if (containsMessages) {
                 directionTravel = when {
@@ -652,9 +685,12 @@ class FanfouActivity : AppCompatActivity() {
                 currentScroll?.post { currentScroll?.scrollTo(0, restoredSearch.scrollY) }
             }
             restoreHome || restoreExplore -> {
-                renderStatuses(nextId != null)
-                val savedY = if (restoreHome) homeScrollY else exploreScrollY
-                currentScroll?.post { currentScroll?.scrollTo(0, savedY) }
+                val anchor = homeScrollAnchor.takeIf { restoreHome && homeHasNewContent }
+                renderStatuses(nextId != null, anchor)
+                if (anchor == null) {
+                    val savedY = if (restoreHome) homeScrollY else exploreScrollY
+                    currentScroll?.post { currentScroll?.scrollTo(0, savedY) }
+                }
             }
             tabs && title == "关注" && !homeCacheLoaded -> restoreHomeCache(turn)
             else -> loadStatuses(true)
@@ -691,6 +727,67 @@ class FanfouActivity : AppCompatActivity() {
         )
     }
 
+    private fun refreshHomeInBackground() {
+        if (homeRefreshInFlight || homeItems.isEmpty()) return
+        val owner = session.credentials() ?: return
+        val knownIds = homeItems.mapTo(mutableSetOf()) { it.id }
+        homeRefreshInFlight = true
+        runIo(
+            { fetchHomeUpdates({ cursor -> api.home(cursor) }, knownIds) },
+            { received ->
+                homeRefreshInFlight = false
+                if (session.credentials() != owner) return@runIo
+                if (showingTabs && activeTab == "关注") {
+                    if (busy) {
+                        homeRefreshPending = true
+                    } else {
+                        val anchor = firstVisibleItemAnchor()
+                        val fresh = mergeHome(received, prepend = true)
+                        if (fresh.isNotEmpty()) {
+                            homeItems = items.toList()
+                            homeHasNewContent = true
+                            homeNewContentHint?.visibility = View.VISIBLE
+                            renderStatuses(nextId != null, anchor)
+                        }
+                    }
+                } else {
+                    val known = homeItems.mapTo(mutableSetOf()) { it.id }
+                    val fresh = received.filter { it.id.isNotBlank() && known.add(it.id) }
+                    if (fresh.isNotEmpty()) {
+                        homeItems = fresh + homeItems
+                        homeHasNewContent = true
+                    }
+                }
+            },
+            { error ->
+                homeRefreshInFlight = false
+                if (session.credentials() == owner) toast("关注流更新失败：" + safeMessage(error))
+            }
+        )
+    }
+
+    private fun fetchHomeUpdates(loader: (String?) -> List<FanfouStatus>, knownIds: Set<String>): List<FanfouStatus> {
+        val updates = mutableListOf<FanfouStatus>()
+        val seen = mutableSetOf<String>()
+        var cursor: String? = null
+        repeat(10) {
+            val page = loader(cursor)
+            updates.addAll(page.filter { it.id.isNotBlank() && seen.add(it.id) })
+            if (page.any { it.id in knownIds } || page.size < 20) return updates
+            val next = page.lastOrNull()?.id
+            check(!next.isNullOrBlank() && next != cursor) { "无法继续读取新动态，请稍后重试" }
+            cursor = next
+        }
+        error("新动态过多，暂时无法完整更新，请稍后重试")
+    }
+
+    private fun clearHomeNewContent() {
+        homeHasNewContent = false
+        homeNewContentHint?.visibility = View.GONE
+    }
+
+    private data class TimelineAnchor(val id: String, val offset: Int)
+
     private fun loadStatuses(reset: Boolean, mergeFresh: Boolean = false) {
         val loader = statusLoader ?: return
         if (busy) return
@@ -708,24 +805,24 @@ class FanfouActivity : AppCompatActivity() {
         }
         showFloatingLoading(if (reset) "正在读取动态…" else "正在加载更多…")
         val cursor = if (reset) null else nextId
+        val knownIds = if (mergeFresh) items.mapTo(mutableSetOf()) { it.id } else emptySet()
         runIo(
-            { loader(cursor) },
+            { if (mergeFresh) fetchHomeUpdates(loader, knownIds) else loader(cursor) },
             { received ->
                 if (turn != generation) return@runIo
                 busy = false
                 hideFloatingLoading()
-                // 合并进站缓存前先记下视口第一张卡，合并后锚定它，阅读位置不跳。
-                val anchor = if (mergeFresh && (currentScroll?.scrollY ?: 0) > 0) firstVisibleItemId() else null
+                val anchor = if (mergeFresh && (currentScroll?.scrollY ?: 0) > 0) firstVisibleItemAnchor() else null
                 if (reset && !mergeFresh) {
                     items.clear()
                     nextId = null
                 }
-                val fresh = if (showingTabs && activeTab == "关注") mergeHome(received) else {
+                val fresh = if (showingTabs && activeTab == "关注") mergeHome(received, prepend = mergeFresh) else {
                     val known = items.mapTo(mutableSetOf()) { it.id }
                     received.filter { it.id.isNotBlank() && known.add(it.id) }.also { items.addAll(it) }
                 }
                 nextId = when {
-                    reset && mergeFresh -> if (received.size >= 20) received.lastOrNull()?.id else null
+                    reset && mergeFresh -> nextId
                     received.size >= 20 && (fresh.isNotEmpty() || (showingTabs && activeTab == "关注")) ->
                         nextCursor(received, cursor)?.takeIf { it != cursor }
                     else -> null
@@ -734,6 +831,10 @@ class FanfouActivity : AppCompatActivity() {
                     homeCacheLoaded = true
                     homeItems = items.toList()
                     homeNextId = nextId
+                    if (mergeFresh && fresh.isNotEmpty()) {
+                        homeHasNewContent = true
+                        homeNewContentHint?.visibility = View.VISIBLE
+                    }
                 }
                 if (showingTabs && activeTab == "随便看看") {
                     exploreItems = items.toList()
@@ -741,10 +842,15 @@ class FanfouActivity : AppCompatActivity() {
                 }
                 if (reset) renderStatuses(nextId != null, anchor)
                 else appendStatuses(fresh, nextId != null)
+                if (homeRefreshPending && showingTabs && activeTab == "关注") {
+                    homeRefreshPending = false
+                    loadStatuses(reset = true, mergeFresh = items.isNotEmpty())
+                }
             },
             { error ->
                 if (turn != generation) return@runIo
                 busy = false
+                homeRefreshPending = false
                 hideFloatingLoading()
                 val deniedProfile = timelineProfile?.takeIf { (error as? FanfouApiException)?.code == 403 }
                 if (deniedProfile != null) {
@@ -771,35 +877,29 @@ class FanfouActivity : AppCompatActivity() {
         )
     }
 
-    /**
-     * 关注流按 id 从新到旧合并：进站合并与补页都可能拿到夹在已有内容中间的动态，
-     * 直接追加会打乱时间序；id 非数值时退回普通追加，尊重服务端顺序。
-     */
-    private fun mergeHome(received: List<FanfouStatus>): List<FanfouStatus> {
+    private fun mergeHome(received: List<FanfouStatus>, prepend: Boolean): List<FanfouStatus> {
         val known = items.mapTo(mutableSetOf()) { it.id }
         val fresh = received.filter { it.id.isNotBlank() && known.add(it.id) }
-        if (fresh.isEmpty()) return fresh
-        if ((items + fresh).any { it.id.toLongOrNull() == null }) {
+        if ((items + fresh).all { it.id.toLongOrNull() != null }) {
             items.addAll(fresh)
-            return fresh
+            items.sortByDescending { it.id.toLong() }
+        } else if (prepend) {
+            items.addAll(0, fresh)
+        } else {
+            items.addAll(fresh)
         }
-        val merged = (items + fresh).sortedByDescending { it.id.toLong() }
-        items.clear()
-        items.addAll(merged)
         return fresh
     }
 
-    /** 当前视口顶部第一张卡对应的动态 id，合并新内容后用它锚定阅读位置。 */
-    private fun firstVisibleItemId(): String? {
+    private fun firstVisibleItemAnchor(): TimelineAnchor? {
         val scroll = currentScroll ?: return null
-        val y = scroll.scrollY
-        for (index in 0 until body.childCount) {
-            if (body.getChildAt(index).bottom > y) return items.getOrNull(index)?.id
+        return items.firstNotNullOfOrNull { status ->
+            val card = timelineCards[status.id] ?: return@firstNotNullOfOrNull null
+            if (card.bottom > scroll.scrollY) TimelineAnchor(status.id, scroll.scrollY - card.top) else null
         }
-        return items.firstOrNull()?.id
     }
 
-    private fun renderStatuses(hasMore: Boolean, anchorId: String? = null) {
+    private fun renderStatuses(hasMore: Boolean, anchor: TimelineAnchor? = null) {
         val scroll = body.parent as? ScrollView
         val previousY = scroll?.scrollY ?: 0
         body.removeAllViews()
@@ -810,11 +910,9 @@ class FanfouActivity : AppCompatActivity() {
         if (items.isEmpty()) body.addView(emptyState("这里还没有动态", "下拉刷新，稍后再来看看。"))
         appendStatuses(items, hasMore)
         scroll?.post {
-            // 有锚点时把原视口首卡放回原位（上方插入了新动态）；找不到再退回原滚动位置。
-            val anchorIndex = anchorId?.let { id -> items.indexOfFirst { it.id == id } }
-                ?.takeIf { it >= 0 && it < items.size }
-            if (anchorIndex != null && anchorIndex < body.childCount) {
-                scroll.scrollTo(0, body.getChildAt(anchorIndex).top - dp(2))
+            val card = anchor?.let { timelineCards[it.id] }
+            if (card != null && anchor != null) {
+                scroll.scrollTo(0, card.top + anchor.offset)
             } else {
                 scroll.scrollTo(0, previousY)
             }
@@ -1441,7 +1539,15 @@ class FanfouActivity : AppCompatActivity() {
                     isFocusable = true
                     setOnClickListener { openStatusById(target) }
                 }
-                addView(label(part.author?.let { "转自 @$it" } ?: "转发的动态", 11, muted, true))
+                addView(label(part.author?.let { "转自 @$it" } ?: "转发的动态", 11, muted, true).apply {
+                    part.author?.let { author ->
+                        contentDescription = "打开 $author 的主页"
+                        isFocusable = true
+                        minHeight = dp(32)
+                        gravity = Gravity.CENTER_VERTICAL
+                        setOnClickListener { openRepostAuthor(author) }
+                    }
+                })
                 if (part.text.isNotBlank()) addView(mentionLabel(part.text, 13, ink,
                     onBodyClick = target?.let { id -> { openStatusById(id) } }
                 ).apply {
@@ -1451,6 +1557,25 @@ class FanfouActivity : AppCompatActivity() {
             }
             addView(section)
         }
+    }
+
+    private fun openRepostAuthor(author: String) {
+        val turn = generation
+        showFloatingLoading("正在查找用户…")
+        runIo(
+            { api.searchUsers(author).filter { it.name == author || it.id.equals(author, ignoreCase = true) }.distinctBy { it.id } },
+            { matches ->
+                if (turn != generation) return@runIo
+                hideFloatingLoading()
+                if (matches.size == 1) openUser(matches.single())
+                else toast(if (matches.isEmpty()) "未找到该用户" else "找到多个同名用户，无法确定主页")
+            },
+            { error ->
+                if (turn != generation) return@runIo
+                hideFloatingLoading()
+                toast("查找用户失败：" + safeMessage(error))
+            }
+        )
     }
 
     /** 只在关注流、通知提及和详情页补拉引用原动态；搜索、随便看看等保持零额外请求。 */
