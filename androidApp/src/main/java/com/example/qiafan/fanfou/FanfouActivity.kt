@@ -728,7 +728,7 @@ class FanfouActivity : AppCompatActivity() {
     }
 
     private fun refreshHomeInBackground() {
-        if (homeRefreshInFlight || homeItems.isEmpty()) return
+        if (homeRefreshInFlight) return
         val owner = session.credentials() ?: return
         val knownIds = homeItems.mapTo(mutableSetOf()) { it.id }
         homeRefreshInFlight = true
@@ -742,9 +742,13 @@ class FanfouActivity : AppCompatActivity() {
                         homeRefreshPending = true
                     } else {
                         val anchor = firstVisibleItemAnchor()
+                        val wasEmpty = items.isEmpty()
                         val fresh = mergeHome(received, prepend = true)
                         if (fresh.isNotEmpty()) {
+                            if (wasEmpty) nextId = received.lastOrNull()?.id?.takeIf { received.size >= 20 }
                             homeItems = items.toList()
+                            homeNextId = nextId
+                            homeCacheLoaded = true
                             homeHasNewContent = true
                             homeNewContentHint?.visibility = View.VISIBLE
                             renderStatuses(nextId != null, anchor)
@@ -754,7 +758,9 @@ class FanfouActivity : AppCompatActivity() {
                     val known = homeItems.mapTo(mutableSetOf()) { it.id }
                     val fresh = received.filter { it.id.isNotBlank() && known.add(it.id) }
                     if (fresh.isNotEmpty()) {
+                        if (homeItems.isEmpty()) homeNextId = received.lastOrNull()?.id?.takeIf { received.size >= 20 }
                         homeItems = fresh + homeItems
+                        homeCacheLoaded = true
                         homeHasNewContent = true
                     }
                 }
@@ -767,6 +773,7 @@ class FanfouActivity : AppCompatActivity() {
     }
 
     private fun fetchHomeUpdates(loader: (String?) -> List<FanfouStatus>, knownIds: Set<String>): List<FanfouStatus> {
+        if (knownIds.isEmpty()) return loader(null)
         val updates = mutableListOf<FanfouStatus>()
         val seen = mutableSetOf<String>()
         var cursor: String? = null
