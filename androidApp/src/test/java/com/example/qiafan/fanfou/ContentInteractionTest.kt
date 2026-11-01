@@ -9,6 +9,8 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.TextView
 import org.junit.Assert.*
+import org.json.JSONObject
+import org.robolectric.shadows.ShadowToast
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Robolectric
@@ -56,11 +58,33 @@ class ContentInteractionTest {
     }
 
     @Test fun tappingEmbeddedQuoteTextAlsoOpensTheCorrespondingOriginal() = withActivity { a ->
-        val quote = FanfouActivity::class.java.getDeclaredMethod("embeddedQuoteBox", String::class.java, String::class.java, String::class.java, FanfouStatus::class.java)
-            .apply { isAccessible = true }.invoke(a, user.name, original.text, original.id, null) as View
+        val quote = FanfouActivity::class.java.getDeclaredMethod("embeddedQuoteBox", String::class.java, String::class.java, String::class.java, FanfouStatus::class.java, List::class.java)
+            .apply { isAccessible = true }.invoke(a, user.name, original.text, original.id, null, emptyList<String>()) as View
         cache(a)
         tapText(quote, original.text)
         assertEquals("转发内嵌原文也必须响应点击", original.id, target(a)?.id)
+    }
+
+    @Test fun tappingNestedRepostAuthorUsesTheIdFromTheHtmlLink() = withActivity { a ->
+        val payload = JSONObject().put("id", "repost").put("repost_status_id", "root")
+            .put("text", "转@<a href=\"http://fanfou.com/first-id\">喜舍</a> 转@<a href=\"https://fanfou.com/actual-id\">Coolgogo</a> 然")
+        val parser = FanfouApi::class.java.getDeclaredMethod("statusFrom", JSONObject::class.java, Boolean::class.javaPrimitiveType)
+            .apply { isAccessible = true }
+        val status = parser.invoke(FanfouApi { error("not used") }, payload, false) as FanfouStatus
+        val content = statusContent(status)
+        val quote = FanfouActivity::class.java.getDeclaredMethod("embeddedQuoteBox", String::class.java, String::class.java, String::class.java, FanfouStatus::class.java, List::class.java)
+            .apply { isAccessible = true }.invoke(a, content.captionName, content.embeddedQuote, content.quoteId, null, content.repostAuthorIds) as View
+        descendants(quote).filterIsInstance<TextView>().first { it.text.toString() == "转自 @Coolgogo" }.performClick()
+        val profile = FanfouActivity::class.java.getDeclaredField("timelineProfile").apply { isAccessible = true }.get(a) as FanfouUser
+        assertEquals("actual-id", profile.id)
+    }
+
+    @Test fun repostAuthorWithoutAnIdDoesNotGuessAUser() = withActivity { a ->
+        val quote = FanfouActivity::class.java.getDeclaredMethod("embeddedQuoteBox", String::class.java, String::class.java, String::class.java, FanfouStatus::class.java, List::class.java)
+            .apply { isAccessible = true }.invoke(a, "Coolgogo", "正文", "root", null, emptyList<String>()) as View
+        descendants(quote).filterIsInstance<TextView>().first { it.text.toString() == "转自 @Coolgogo" }.performClick()
+        assertEquals("无法确定该用户的主页", ShadowToast.getTextOfLatestToast())
+        assertNull(FanfouActivity::class.java.getDeclaredField("timelineProfile").apply { isAccessible = true }.get(a))
     }
 
     @Test fun tappingThePreviewImageClosesTheOverlay() = withActivity { a ->

@@ -8,10 +8,11 @@ internal data class StatusContent(
     val mentions: List<FanfouMention> = emptyList(),
     val captionName: String? = null,
     val quoteId: String? = null,
-    val embeddedQuote: String? = null
+    val embeddedQuote: String? = null,
+    val repostAuthorIds: List<String?> = emptyList()
 )
 
-internal data class RepostQuotePart(val author: String?, val text: String)
+internal data class RepostQuotePart(val author: String?, val text: String, val authorId: String? = null)
 
 /** 转发 ID 可能指向最初原文；只有作者和正文都对应当前这一层时，才用它替换内嵌引用。 */
 internal fun quotedStatus(content: StatusContent, candidate: FanfouStatus?): FanfouStatus? {
@@ -23,16 +24,16 @@ internal fun quotedStatus(content: StatusContent, candidate: FanfouStatus?): Fan
 }
 
 /** 保留转发链中每个人的评论，按原文顺序放在同一引用区域内。 */
-internal fun repostQuoteParts(author: String?, text: String): List<RepostQuotePart> {
+internal fun repostQuoteParts(author: String?, text: String, authorIds: List<String?> = emptyList()): List<RepostQuotePart> {
     val parts = mutableListOf<RepostQuotePart>()
     var name = author
     var start = 0
     for (marker in Regex("转@(\\S+?)(?:\\s*[:：]\\s*|\\s+|\$)").findAll(text)) {
-        parts += RepostQuotePart(name, text.substring(start, marker.range.first).trim())
+        parts += RepostQuotePart(name, text.substring(start, marker.range.first).trim(), authorIds.getOrNull(parts.size))
         name = marker.groupValues[1]
         start = marker.range.last + 1
     }
-    parts += RepostQuotePart(name, text.substring(start).trim())
+    parts += RepostQuotePart(name, text.substring(start).trim(), authorIds.getOrNull(parts.size))
     return parts
 }
 
@@ -63,7 +64,13 @@ internal fun statusContent(status: FanfouStatus): StatusContent {
                 text = if (marker > 0) text.substring(0, marker).trim() else "",
                 quoteId = status.repostId,
                 captionName = prefix.groupValues[1],
-                embeddedQuote = text.substring(cut).trim().ifBlank { null }
+                embeddedQuote = text.substring(cut).trim().ifBlank { null },
+                repostAuthorIds = Regex("转@(\\S+?)(?:\\s*[:：]\\s*|\\s+|\$)")
+                    .findAll(text, marker).map { match ->
+                        val start = match.range.first + 1
+                        val end = start + 1 + match.groupValues[1].length
+                        status.mentions.firstOrNull { it.start == start && it.end == end }?.userId
+                    }.toList()
             )
         }
         return StatusContent(text = text.ifBlank { "（无文字）" }, quoteId = status.repostId)

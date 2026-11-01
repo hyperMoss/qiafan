@@ -1009,7 +1009,7 @@ class FanfouActivity : AppCompatActivity() {
             val embedded = content.embeddedQuote
             val quoteUnavailable = !quoteFetchAllowed(detail) || quoteId in quoteFailed
             if (quoted == null && embedded != null) {
-                card.addView(embeddedQuoteBox(content.captionName, embedded, quoteId, embeddedOriginal),
+                card.addView(embeddedQuoteBox(content.captionName, embedded, quoteId, embeddedOriginal, content.repostAuthorIds),
                     LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
             } else if (quoted == null && status.repostId == null && quoteUnavailable) {
                 card.addView(quoteSourceLine(content.captionName, quoteId),
@@ -1524,10 +1524,10 @@ class FanfouActivity : AppCompatActivity() {
     }
 
     /** 原动态暂不可达（已删、受保护或还没拉到）时，引用内容先用转发文本里带的原文。 */
-    private fun embeddedQuoteBox(name: String?, text: String, quoteId: String?, original: FanfouStatus? = null): View = box().apply {
+    private fun embeddedQuoteBox(name: String?, text: String, quoteId: String?, original: FanfouStatus? = null, authorIds: List<String?> = emptyList()): View = box().apply {
         setPadding(dp(12), dp(10), dp(12), dp(12))
         background = rounded(subtle, 8)
-        val parts = repostQuoteParts(name, text)
+        val parts = repostQuoteParts(name, text, authorIds)
         parts.forEachIndexed { index, part ->
             if (index > 0) addView(divider().apply { top(10) })
             if (index == parts.lastIndex && original != null) {
@@ -1552,7 +1552,11 @@ class FanfouActivity : AppCompatActivity() {
                         isFocusable = true
                         minHeight = dp(32)
                         gravity = Gravity.CENTER_VERTICAL
-                        setOnClickListener { openRepostAuthor(author) }
+                        setOnClickListener {
+                            val id = part.authorId
+                            if (id != null) openUser(FanfouUser(id, author, "", false))
+                            else toast("无法确定该用户的主页")
+                        }
                     }
                 })
                 if (part.text.isNotBlank()) addView(mentionLabel(part.text, 13, ink,
@@ -1564,25 +1568,6 @@ class FanfouActivity : AppCompatActivity() {
             }
             addView(section)
         }
-    }
-
-    private fun openRepostAuthor(author: String) {
-        val turn = generation
-        showFloatingLoading("正在查找用户…")
-        runIo(
-            { api.searchUsers(author).filter { it.name == author || it.id.equals(author, ignoreCase = true) }.distinctBy { it.id } },
-            { matches ->
-                if (turn != generation) return@runIo
-                hideFloatingLoading()
-                if (matches.size == 1) openUser(matches.single())
-                else toast(if (matches.isEmpty()) "未找到该用户" else "找到多个同名用户，无法确定主页")
-            },
-            { error ->
-                if (turn != generation) return@runIo
-                hideFloatingLoading()
-                toast("查找用户失败：" + safeMessage(error))
-            }
-        )
     }
 
     /** 只在关注流、通知提及和详情页补拉引用原动态；搜索、随便看看等保持零额外请求。 */

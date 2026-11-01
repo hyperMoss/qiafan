@@ -50,9 +50,9 @@ jobs:
       - name: Build CI APK with fixed test signing
         if: github.event_name == 'push'
         run: bash ./gradlew :androidApp:assembleCi --no-daemon
-      - name: Test home timeline pagination
+      - name: Test timeline and content interactions
         if: github.event_name == 'push'
-        run: bash ./gradlew :androidApp:testCiUnitTest --tests 'com.example.qiafan.fanfou.TimelinePaginationTest' --no-daemon
+        run: bash ./gradlew :androidApp:testCiUnitTest --tests 'com.example.qiafan.fanfou.TimelinePaginationTest' --tests 'com.example.qiafan.fanfou.ContentInteractionTest' --no-daemon
       - name: Build PR debug APK
         if: github.event_name == 'pull_request'
         run: bash ./gradlew :androidApp:assembleDebug --no-daemon
