@@ -95,6 +95,32 @@ class TimelinePaginationTest {
         assertEquals(listOf("动态 100", "动态 95", "动态 90", "动态 80"), texts(body).filter { it.startsWith("动态 ") })
     }
 
+    @Test fun refreshingHomePrependsNonNumericIdsAndKeepsTheOlderPageCursor() = timeline { activity, body ->
+        set(activity, "statusLoader", { _: String? -> listOf(status(22), status(21), status(1)) })
+        FanfouActivity::class.java.getDeclaredMethod("loadStatuses", Boolean::class.javaPrimitiveType, Boolean::class.javaPrimitiveType)
+            .apply { isAccessible = true }.invoke(activity, true, true)
+        finishRequest(activity)
+
+        assertEquals(listOf("动态 22", "动态 21", "动态 1"), texts(body).filter { it.startsWith("动态 ") }.take(3))
+        assertEquals("post-20", field(activity, "nextId"))
+        assertEquals(true, field(activity, "homeHasNewContent"))
+    }
+
+    @Test fun refreshingHomeFetchesAcrossPagesUntilItReachesCachedPosts() = timeline { activity, body ->
+        val requested = mutableListOf<String?>()
+        set(activity, "statusLoader", { cursor: String? ->
+            requested.add(cursor)
+            if (cursor == null) (40 downTo 21).map(::status) else listOf(status(21), status(1))
+        })
+        FanfouActivity::class.java.getDeclaredMethod("loadStatuses", Boolean::class.javaPrimitiveType, Boolean::class.javaPrimitiveType)
+            .apply { isAccessible = true }.invoke(activity, true, true)
+        finishRequest(activity)
+
+        assertEquals(listOf(null, "post-21"), requested)
+        assertEquals((40 downTo 21).map { "动态 $it" }, texts(body).filter { it.startsWith("动态 ") }.take(20))
+        assertEquals("post-20", field(activity, "nextId"))
+    }
+
     @Test fun loadingQuotedOriginalUpdatesOnlyItsOwnCard() = timeline { activity, body ->
         @Suppress("UNCHECKED_CAST")
         val failed = field(activity, "quoteFailed") as MutableSet<String>
@@ -117,7 +143,8 @@ class TimelinePaginationTest {
     }
 
     private fun render(activity: FanfouActivity) {
-        FanfouActivity::class.java.getDeclaredMethod("renderStatuses", Boolean::class.javaPrimitiveType, String::class.java)
+        val anchorClass = Class.forName("com.example.qiafan.fanfou.FanfouActivity\$TimelineAnchor")
+        FanfouActivity::class.java.getDeclaredMethod("renderStatuses", Boolean::class.javaPrimitiveType, anchorClass)
             .apply { isAccessible = true }.invoke(activity, true, null)
         shadowOf(Looper.getMainLooper()).idle()
     }
