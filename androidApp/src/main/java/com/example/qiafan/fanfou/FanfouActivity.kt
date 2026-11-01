@@ -554,7 +554,7 @@ class FanfouActivity : AppCompatActivity() {
             val dy = y - previousY
             if (!restoringHomePosition && tabs && activeTab == "关注" && dy < 0 && y <= dp(8)) clearHomeNewContent()
             val containsMessages = statusLoader != null || (tabs && activeTab == "通知")
-            if (containsMessages) {
+            if (containsMessages && !restoringHomePosition) {
                 directionTravel = when {
                     dy > 0 -> directionTravel.coerceAtLeast(0) + dy
                     dy < 0 -> directionTravel.coerceAtMost(0) + dy
@@ -719,16 +719,12 @@ class FanfouActivity : AppCompatActivity() {
         val turn = generation
         when {
             restoredSearch != null -> {
-                renderStatuses(nextId != null)
-                currentScroll?.post { currentScroll?.scrollTo(0, restoredSearch.scrollY) }
+                renderStatuses(nextId != null, fallbackY = restoredSearch.scrollY)
             }
             restoreHome || restoreExplore -> {
-                val anchor = homeScrollAnchor.takeIf { restoreHome && homeHasNewContent }
-                renderStatuses(nextId != null, anchor)
-                if (anchor == null) {
-                    val savedY = if (restoreHome) homeScrollY else exploreScrollY
-                    currentScroll?.post { currentScroll?.scrollTo(0, savedY) }
-                }
+                val anchor = homeScrollAnchor.takeIf { restoreHome }
+                val savedY = if (restoreHome) homeScrollY else exploreScrollY
+                renderStatuses(nextId != null, anchor, fallbackY = savedY)
             }
             tabs && title == "关注" && !homeCacheLoaded -> restoreHomeCache(turn)
             else -> loadStatuses(true)
@@ -960,10 +956,10 @@ class FanfouActivity : AppCompatActivity() {
         }
     }
 
-    private fun renderStatuses(hasMore: Boolean, anchor: TimelineAnchor? = null, afterRestore: (() -> Unit)? = null) {
+    private fun renderStatuses(hasMore: Boolean, anchor: TimelineAnchor? = null, fallbackY: Int? = null, afterRestore: (() -> Unit)? = null) {
         val scroll = body.parent as? ScrollView
-        val previousY = scroll?.scrollY ?: 0
-        if (scroll != null && anchor != null && showingTabs && activeTab == "关注") restoringHomePosition = true
+        val previousY = fallbackY ?: scroll?.scrollY ?: 0
+        if (scroll != null && (anchor != null || fallbackY != null)) restoringHomePosition = true
         body.removeAllViews()
         timelineFooter = null
         timelineCards.clear()
@@ -971,12 +967,12 @@ class FanfouActivity : AppCompatActivity() {
         if (showingTabs && activeTab == "随便看看") addExploreHeader()
         if (items.isEmpty()) body.addView(emptyState("这里还没有动态", "下拉刷新，稍后再来看看。"))
         appendStatuses(items, hasMore)
-        if (scroll != null && anchor != null) {
+        if (scroll != null && (anchor != null || fallbackY != null)) {
             scroll.viewTreeObserver.addOnPreDrawListener(object : android.view.ViewTreeObserver.OnPreDrawListener {
                 override fun onPreDraw(): Boolean {
                     scroll.viewTreeObserver.removeOnPreDrawListener(this)
-                    val card = timelineCards[anchor.id]
-                    scroll.scrollTo(0, if (card != null) card.top + anchor.offset else previousY)
+                    val card = anchor?.let { timelineCards[it.id] }
+                    scroll.scrollTo(0, if (card != null && anchor != null) card.top + anchor.offset else previousY)
                     restoringHomePosition = false
                     afterRestore?.invoke()
                     return true
@@ -2817,6 +2813,7 @@ class FanfouActivity : AppCompatActivity() {
                     homeItems = emptyList()
                     homeNextId = null
                     homeScrollY = 0
+                    homeScrollAnchor = null
                     showTab("关注")
                 },
                 { error ->
