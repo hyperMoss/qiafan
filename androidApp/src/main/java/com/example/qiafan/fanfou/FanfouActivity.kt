@@ -80,6 +80,7 @@ class FanfouActivity : AppCompatActivity() {
     private val homeSnapshotIo = Executors.newSingleThreadExecutor()
     private val homeSnapshotLock = Any()
     private var homeSnapshotEpoch = 0
+    @Volatile private var homeSnapshotSaveFailed = false
     private var activeTab = "关注"
     private var statusLoader: ((String?) -> List<FanfouStatus>)? = null
     private var nextCursor: (List<FanfouStatus>, String?) -> String? =
@@ -192,6 +193,10 @@ class FanfouActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         if (resumedOnce && session.credentials()?.token?.isNotBlank() == true) {
+            if (homeSnapshotSaveFailed) {
+                homeSnapshotSaveFailed = false
+                toast("未能保存上次阅读位置")
+            }
             refreshUnreadCounts()
             if (showingTabs && activeTab == "关注") {
                 if (busy) homeRefreshPending = true
@@ -262,7 +267,14 @@ class FanfouActivity : AppCompatActivity() {
         val epoch = synchronized(homeSnapshotLock) { homeSnapshotEpoch }
         homeSnapshotIo.execute {
             synchronized(homeSnapshotLock) {
-                if (epoch == homeSnapshotEpoch) runCatching { HomeTimelineCache(session).write(snapshot, owner) }
+                if (epoch == homeSnapshotEpoch) {
+                    runCatching { HomeTimelineCache(session).write(snapshot, owner) }
+                        .onSuccess { homeSnapshotSaveFailed = false }
+                        .onFailure {
+                            homeSnapshotSaveFailed = true
+                            Log.w("QiafanHome", "Unable to save reading position")
+                        }
+                }
             }
         }
     }
@@ -299,6 +311,7 @@ class FanfouActivity : AppCompatActivity() {
         homeNewContentHint = null
         homeRefreshPending = false
         homeRefreshInFlight = false
+        homeSnapshotSaveFailed = false
         quoteContext.clear()
         quoteFailed.clear()
         quoteInFlight.clear()
