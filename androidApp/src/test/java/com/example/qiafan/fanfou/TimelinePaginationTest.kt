@@ -121,6 +121,51 @@ class TimelinePaginationTest {
         assertEquals("post-20", field(activity, "nextId"))
     }
 
+    @Test fun returningToHomeRestoresThePreviousPositionWithoutNewPosts() = timeline { activity, _ ->
+        val oldScroll = field(activity, "currentScroll") as ScrollView
+        layout(oldScroll)
+        oldScroll.scrollTo(0, 300)
+        val expectedY = oldScroll.scrollY
+        assertTrue(expectedY > 0)
+        FanfouActivity::class.java.getDeclaredMethod("rememberHomeState").apply { isAccessible = true }.invoke(activity)
+        set(activity, "homeHasNewContent", false)
+        val snapshotClass = Class.forName("com.example.qiafan.fanfou.FanfouActivity\$SearchTimelineSnapshot")
+        val cursor: (List<FanfouStatus>, String?) -> String? = { received, _ -> received.lastOrNull()?.id }
+        val loader: (String?) -> List<FanfouStatus> = { emptyList() }
+        FanfouActivity::class.java.getDeclaredMethod("showTimeline", String::class.java, Boolean::class.javaPrimitiveType,
+            kotlin.jvm.functions.Function2::class.java, FanfouUser::class.java, Boolean::class.javaPrimitiveType,
+            snapshotClass, kotlin.jvm.functions.Function1::class.java)
+            .apply { isAccessible = true }.invoke(activity, "关注", true, cursor, null, false, null, loader)
+        shadowOf(Looper.getMainLooper()).idle()
+        val restored = field(activity, "currentScroll") as ScrollView
+        layout(restored)
+        restored.viewTreeObserver.dispatchOnPreDraw()
+
+        assertEquals(expectedY, restored.scrollY)
+    }
+
+    @Test fun insertingNewPostsRestoresTheSameCardAndOffsetAfterLayout() = timeline { activity, body ->
+        val scroll = field(activity, "currentScroll") as ScrollView
+        layout(scroll)
+        scroll.scrollTo(0, 180)
+        val anchor = FanfouActivity::class.java.getDeclaredMethod("firstVisibleItemAnchor")
+            .apply { isAccessible = true }.invoke(activity) ?: error("应能定位阅读中的动态")
+        val anchorClass = anchor.javaClass
+        val id = anchorClass.getDeclaredMethod("getId").apply { isAccessible = true }.invoke(anchor) as String
+        val offset = anchorClass.getDeclaredMethod("getOffset").apply { isAccessible = true }.invoke(anchor) as Int
+        @Suppress("UNCHECKED_CAST")
+        val existing = (field(activity, "items") as List<FanfouStatus>).toList()
+        val updated = listOf(status(22), status(21)) + existing
+        set(activity, "items", updated.toMutableList())
+        FanfouActivity::class.java.getDeclaredMethod("renderStatuses", Boolean::class.javaPrimitiveType, anchorClass, Int::class.javaObjectType, kotlin.jvm.functions.Function0::class.java)
+            .apply { isAccessible = true }.invoke(activity, true, anchor, null, null)
+        layout(scroll)
+        scroll.viewTreeObserver.dispatchOnPreDraw()
+
+        val index = updated.indexOfFirst { it.id == id }
+        assertEquals(body.getChildAt(index).top + offset, scroll.scrollY)
+    }
+
     @Test fun loadingQuotedOriginalUpdatesOnlyItsOwnCard() = timeline { activity, body ->
         @Suppress("UNCHECKED_CAST")
         val failed = field(activity, "quoteFailed") as MutableSet<String>
@@ -144,8 +189,8 @@ class TimelinePaginationTest {
 
     private fun render(activity: FanfouActivity) {
         val anchorClass = Class.forName("com.example.qiafan.fanfou.FanfouActivity\$TimelineAnchor")
-        FanfouActivity::class.java.getDeclaredMethod("renderStatuses", Boolean::class.javaPrimitiveType, anchorClass)
-            .apply { isAccessible = true }.invoke(activity, true, null)
+        FanfouActivity::class.java.getDeclaredMethod("renderStatuses", Boolean::class.javaPrimitiveType, anchorClass, Int::class.javaObjectType, kotlin.jvm.functions.Function0::class.java)
+            .apply { isAccessible = true }.invoke(activity, true, null, null, null)
         shadowOf(Looper.getMainLooper()).idle()
     }
 

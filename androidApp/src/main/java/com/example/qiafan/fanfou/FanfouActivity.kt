@@ -77,6 +77,10 @@ class FanfouActivity : AppCompatActivity() {
     private lateinit var api: FanfouApi
     private lateinit var body: LinearLayout
     private val io = Executors.newFixedThreadPool(3)
+    private val homeSnapshotIo = Executors.newSingleThreadExecutor()
+    private val homeSnapshotLock = Any()
+    private var homeSnapshotEpoch = 0
+    @Volatile private var homeSnapshotSaveFailed = false
     private var activeTab = "关注"
     private var statusLoader: ((String?) -> List<FanfouStatus>)? = null
     private var nextCursor: (List<FanfouStatus>, String?) -> String? =
@@ -94,6 +98,7 @@ class FanfouActivity : AppCompatActivity() {
     private var homeNewContentHint: TextView? = null
     private var homeRefreshPending = false
     private var homeRefreshInFlight = false
+    private var restoringHomePosition = false
     private var lastFollowTabTapAt = 0L
     private var resumedOnce = false
     private var busy = false
@@ -188,6 +193,10 @@ class FanfouActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         if (resumedOnce && session.credentials()?.token?.isNotBlank() == true) {
+            if (homeSnapshotSaveFailed) {
+                homeSnapshotSaveFailed = false
+                toast("未能保存上次阅读位置")
+            }
             refreshUnreadCounts()
             if (showingTabs && activeTab == "关注") {
                 if (busy) homeRefreshPending = true
@@ -200,10 +209,17 @@ class FanfouActivity : AppCompatActivity() {
         resumedOnce = true
     }
 
+    override fun onPause() {
+        rememberHomeState()
+        saveHomeSnapshot()
+        super.onPause()
+    }
+
     override fun onDestroy() {
         statusActionsSheet?.dismiss()
         statusImageDialog?.dismiss()
         io.shutdownNow()
+        homeSnapshotIo.shutdown()
         super.onDestroy()
     }
 
@@ -243,6 +259,26 @@ class FanfouActivity : AppCompatActivity() {
         }
     }
 
+    private fun saveHomeSnapshot() {
+        val owner = session.credentials() ?: return
+        val anchor = homeScrollAnchor ?: return
+        if (homeItems.isEmpty()) return
+        val snapshot = HomeTimelineSnapshot(homeItems.toList(), homeNextId, anchor.id, anchor.offset)
+        val epoch = synchronized(homeSnapshotLock) { homeSnapshotEpoch }
+        homeSnapshotIo.execute {
+            synchronized(homeSnapshotLock) {
+                if (epoch == homeSnapshotEpoch) {
+                    runCatching { HomeTimelineCache(session).write(snapshot, owner) }
+                        .onSuccess { homeSnapshotSaveFailed = false }
+                        .onFailure {
+                            homeSnapshotSaveFailed = true
+                            Log.w("QiafanHome", "Unable to save reading position")
+                        }
+                }
+            }
+        }
+    }
+
     private fun showLogin() {
         statusActionsSheet?.dismiss()
         statusImageDialog?.dismiss()
@@ -275,6 +311,7 @@ class FanfouActivity : AppCompatActivity() {
         homeNewContentHint = null
         homeRefreshPending = false
         homeRefreshInFlight = false
+        homeSnapshotSaveFailed = false
         quoteContext.clear()
         quoteFailed.clear()
         quoteInFlight.clear()
@@ -422,6 +459,7 @@ class FanfouActivity : AppCompatActivity() {
         timelineFooter = null
         timelineCards.clear()
         showingTabs = tabs
+        restoringHomePosition = false
         homeNewContentHint = null
         root.removeAllViews()
         val shellHost = FrameLayout(this)
@@ -514,9 +552,9 @@ class FanfouActivity : AppCompatActivity() {
         }
         scroll.setOnScrollChangeListener { _, _, y, _, _ ->
             val dy = y - previousY
-            if (tabs && activeTab == "关注" && dy < 0 && y <= dp(8)) clearHomeNewContent()
+            if (!restoringHomePosition && tabs && activeTab == "关注" && dy < 0 && y <= dp(8)) clearHomeNewContent()
             val containsMessages = statusLoader != null || (tabs && activeTab == "通知")
-            if (containsMessages) {
+            if (containsMessages && !restoringHomePosition) {
                 directionTravel = when {
                     dy > 0 -> directionTravel.coerceAtLeast(0) + dy
                     dy < 0 -> directionTravel.coerceAtMost(0) + dy
@@ -537,7 +575,7 @@ class FanfouActivity : AppCompatActivity() {
                 }
             }
             previousY = y
-            if (statusLoader != null && !busy && nextId != null &&
+            if (!restoringHomePosition && statusLoader != null && !busy && nextId != null &&
                 y + scroll.height >= body.height - dp(160)
             ) loadStatuses(false)
         }
@@ -681,16 +719,12 @@ class FanfouActivity : AppCompatActivity() {
         val turn = generation
         when {
             restoredSearch != null -> {
-                renderStatuses(nextId != null)
-                currentScroll?.post { currentScroll?.scrollTo(0, restoredSearch.scrollY) }
+                renderStatuses(nextId != null, fallbackY = restoredSearch.scrollY)
             }
             restoreHome || restoreExplore -> {
-                val anchor = homeScrollAnchor.takeIf { restoreHome && homeHasNewContent }
-                renderStatuses(nextId != null, anchor)
-                if (anchor == null) {
-                    val savedY = if (restoreHome) homeScrollY else exploreScrollY
-                    currentScroll?.post { currentScroll?.scrollTo(0, savedY) }
-                }
+                val anchor = homeScrollAnchor.takeIf { restoreHome }
+                val savedY = if (restoreHome) homeScrollY else exploreScrollY
+                renderStatuses(nextId != null, anchor, fallbackY = savedY)
             }
             tabs && title == "关注" && !homeCacheLoaded -> restoreHomeCache(turn)
             else -> loadStatuses(true)
@@ -701,12 +735,28 @@ class FanfouActivity : AppCompatActivity() {
     private fun restoreHomeCache(turn: Int) {
         busy = true
         body.addView(loadingPlaceholders())
+        val owner = session.credentials()
         runIo(
-            { api.cachedHome() },
-            { cached ->
+            {
+                val snapshot = owner?.let { HomeTimelineCache(session).read(it) }
+                    ?.takeIf { saved -> saved.statuses.any { it.id == saved.anchorId } }
+                snapshot to if (snapshot == null) api.cachedHome() else null
+            },
+            { (snapshot, cached) ->
                 if (turn != generation) return@runIo
                 homeCacheLoaded = true
                 busy = false
+                if (snapshot != null) {
+                    items.addAll(snapshot.statuses)
+                    nextId = snapshot.nextId
+                    homeItems = items.toList()
+                    homeNextId = nextId
+                    homeScrollAnchor = TimelineAnchor(snapshot.anchorId, snapshot.anchorOffset)
+                    renderStatuses(nextId != null, homeScrollAnchor) {
+                        if (turn == generation) loadStatuses(reset = true, mergeFresh = true)
+                    }
+                    return@runIo
+                }
                 if (cached == null) {
                     loadStatuses(true)
                     return@runIo
@@ -819,7 +869,7 @@ class FanfouActivity : AppCompatActivity() {
                 if (turn != generation) return@runIo
                 busy = false
                 hideFloatingLoading()
-                val anchor = if (mergeFresh && (currentScroll?.scrollY ?: 0) > 0) firstVisibleItemAnchor() else null
+                val anchor = if (mergeFresh) firstVisibleItemAnchor() else null
                 if (reset && !mergeFresh) {
                     items.clear()
                     nextId = null
@@ -906,9 +956,10 @@ class FanfouActivity : AppCompatActivity() {
         }
     }
 
-    private fun renderStatuses(hasMore: Boolean, anchor: TimelineAnchor? = null) {
+    private fun renderStatuses(hasMore: Boolean, anchor: TimelineAnchor? = null, fallbackY: Int? = null, afterRestore: (() -> Unit)? = null) {
         val scroll = body.parent as? ScrollView
-        val previousY = scroll?.scrollY ?: 0
+        val previousY = fallbackY ?: scroll?.scrollY ?: 0
+        if (scroll != null && (anchor != null || fallbackY != null)) restoringHomePosition = true
         body.removeAllViews()
         timelineFooter = null
         timelineCards.clear()
@@ -916,12 +967,21 @@ class FanfouActivity : AppCompatActivity() {
         if (showingTabs && activeTab == "随便看看") addExploreHeader()
         if (items.isEmpty()) body.addView(emptyState("这里还没有动态", "下拉刷新，稍后再来看看。"))
         appendStatuses(items, hasMore)
-        scroll?.post {
-            val card = anchor?.let { timelineCards[it.id] }
-            if (card != null && anchor != null) {
-                scroll.scrollTo(0, card.top + anchor.offset)
-            } else {
+        if (scroll != null && (anchor != null || fallbackY != null)) {
+            scroll.viewTreeObserver.addOnPreDrawListener(object : android.view.ViewTreeObserver.OnPreDrawListener {
+                override fun onPreDraw(): Boolean {
+                    scroll.viewTreeObserver.removeOnPreDrawListener(this)
+                    val card = anchor?.let { timelineCards[it.id] }
+                    scroll.scrollTo(0, if (card != null && anchor != null) card.top + anchor.offset else previousY)
+                    restoringHomePosition = false
+                    afterRestore?.invoke()
+                    return true
+                }
+            })
+        } else {
+            scroll?.post {
                 scroll.scrollTo(0, previousY)
+                afterRestore?.invoke()
             }
         }
     }
@@ -2753,6 +2813,7 @@ class FanfouActivity : AppCompatActivity() {
                     homeItems = emptyList()
                     homeNextId = null
                     homeScrollY = 0
+                    homeScrollAnchor = null
                     showTab("关注")
                 },
                 { error ->
@@ -2852,7 +2913,10 @@ class FanfouActivity : AppCompatActivity() {
             toast("正在清除图片缓存")
         }.apply { top(10); horizontalGutter() })
         body.addView(action("清除通知与信息流缓存") {
-            session.clearNotificationCache()
+            synchronized(homeSnapshotLock) {
+                homeSnapshotEpoch++
+                session.clearNotificationCache()
+            }
             notificationSnapshot = null
             notificationCacheLoaded = false
             notificationScrollY = 0
@@ -2860,6 +2924,8 @@ class FanfouActivity : AppCompatActivity() {
             homeItems = emptyList()
             homeNextId = null
             homeScrollY = 0
+            homeScrollAnchor = null
+            homeHasNewContent = false
             quoteContext.clear()
             quoteFailed.clear()
             toast("已清除通知与信息流缓存")
@@ -2873,7 +2939,10 @@ class FanfouActivity : AppCompatActivity() {
                 .setMessage("退出后会清除授权与本机浏览历史。")
                 .setNegativeButton("取消", null)
                 .setPositiveButton("退出") { _, _ ->
-                    session.logout()
+                    synchronized(homeSnapshotLock) {
+                        homeSnapshotEpoch++
+                        session.logout()
+                    }
                     Glide.get(this).clearMemory()
                     io.execute {
                         Glide.get(applicationContext).clearDiskCache()
